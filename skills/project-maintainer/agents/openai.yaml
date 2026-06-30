@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Maintainer"
+  short_description: "Compact project maps and maintenance docs."
+  default_prompt: "Use $project-maintainer to initialize or update the structured project-maintenance docs for this repository."
