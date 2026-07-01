@@ -21,13 +21,15 @@ Sync status: current | partial | stale | unknown
 
 ## How To Read
 
-Start with `INDEX.md`, then `manifest.yaml`, then the module or directory relevant to the task.
+Start with `INDEX.md`, then `manifest.yaml`, then the module, directory, or flow relevant to the task.
 
 ## Maintenance Rules
 
 - Keep files within the size budgets in `references/artifact-structure.md`.
-- Update module docs, directory docs, changes, and decisions after behavior or structure changes.
+- Update module docs, directory docs, flow docs, changes, and decisions after behavior or structure changes.
 - Check existing artifact sync status before relying on it.
+- Do not mark the artifact `current` without a recorded coverage closure audit or skip reason.
+- Do not mark cross-boundary behavior `current` unless required flows are documented, pending, or out of scope.
 - Mark uncertain claims with `confidence: inferred` or `confidence: unknown`.
 ```
 
@@ -42,13 +44,22 @@ sync:
   status: "unknown"
   last_scanned_commit: null
   last_synced_commit: null
+  coverage_closure:
+    status: "not_run" # not_run | partial | passed | skipped
+    source: null # git ls-files | filesystem listing | skipped
+    last_audited: null
+    tracked_paths: "not_audited" # not_audited | mapped_or_dispositioned
+    untracked_paths: "not_audited" # not_audited | classified | not_applicable
+    flow_traces: "not_audited" # not_audited | documented_or_dispositioned
+    notes: "Do not mark current until stable tracked paths and required flows are mapped, pending, or out of scope."
   pending:
     - id: "SYNC-YYYYMMDD-001"
-      reason: "Docs may not reflect recent gateway changes."
+      reason: "Docs may not reflect recent changes."
       paths:
-        - "src/gateway"
+        - "path/to/directory"
       modules:
-        - "gateway"
+        - "module-id"
+      flows: []
       created: "YYYY-MM-DD"
 
 project:
@@ -60,35 +71,54 @@ project:
     glossary: "project/glossary.md"
     build_plan: "project/build-plan.md"
     open_questions: "project/open-questions.md"
+    flows_dir: "project/flows"
 
 modules:
-  - id: "gateway"
-    name: "Gateway"
-    summary: "Handles external entrypoints and message routing."
+  - id: "module-id"
+    name: "Module Name"
+    summary: "Module responsibility."
     confidence: "confirmed"
     docs:
-      readme: "modules/gateway/README.md"
-      design: "modules/gateway/design.md"
-      directories: "modules/gateway/directories.md"
-      changes: "modules/gateway/changes.md"
-      git_history: "modules/gateway/git-history.md"
+      readme: "modules/module-id/README.md"
+      design: "modules/module-id/design.md"
+      directories: "modules/module-id/directories.md"
+      changes: "modules/module-id/changes.md"
+      git_history: "modules/module-id/git-history.md"
     directories:
-      - "src/gateway"
-      - "tests/gateway"
+      - "path/to/directory"
+      - "tests/module-id"
     related_decisions: []
+    related_flows: []
     recent_changes: []
     coverage:
       status: "partial"
       last_scanned: "YYYY-MM-DD"
-      notes: "Entrypoints scanned; git history still pending."
+      notes: "Entrypoints scanned; related flows still pending."
 
 directories:
-  - path: "src/gateway"
-    encoded: "src__gateway"
-    summary: "Gateway implementation."
+  - path: "path/to/directory"
+    encoded: "path__to__directory"
+    summary: "Directory responsibility."
     modules:
-      - "gateway"
-    doc: "directories/src__gateway/README.md"
+      - "module-id"
+    doc: "directories/path__to__directory/README.md"
+    related_changes: []
+    related_decisions: []
+    related_flows: []
+    coverage:
+      status: "partial"
+      last_scanned: "YYYY-MM-DD"
+
+flows:
+  - id: "flow-id"
+    name: "Flow Name"
+    summary: "Cross-boundary behavior that produces or restores relied-on state or output."
+    confidence: "inferred"
+    doc: "project/flows/flow-id.md"
+    modules: []
+    directories: []
+    entrypoints: []
+    source_of_truth: []
     related_changes: []
     related_decisions: []
     coverage:
@@ -103,6 +133,7 @@ directories:
 last_updated: YYYY-MM-DD
 sync_status: current | partial | stale | unknown
 coverage_status: planned | partial | current
+flow_coverage_status: planned | partial | current
 ---
 
 # Build Plan
@@ -112,14 +143,32 @@ coverage_status: planned | partial | current
 - Artifact status:
 - Trusted coverage:
 - Known stale areas:
+- Known incomplete areas:
+- Known incomplete flow slices:
 
 ## Completed Slices
 
-- YYYY-MM-DD: `module-or-path` - what was built and confidence
+- YYYY-MM-DD: `slice-id` - module, directory, or flow slice built and confidence
 
 ## Pending Slices
 
 - `module-or-path`: why it remains and suggested next step
+
+## Pending Flow Slices
+
+- `flow-id`: required outcome or state, missing trace link, and suggested next step
+
+## Coverage Closure Audit
+
+- Audit source:
+- Tracked path audit:
+- Unmapped stable tracked paths:
+- Pending tracked paths:
+- Out-of-scope tracked paths:
+- Untracked path disposition:
+- Generated/local/runtime exclusions:
+- Flow trace disposition:
+- Criteria to mark `current`:
 
 ## Multi-Agent Notes
 
@@ -169,22 +218,26 @@ See `changes.md`.
 ## Related Decisions
 
 - ADR-NNNN: title
+
+## Related Flows
+
+- `flow-id`: why it matters
 ```
 
 ## Directory README
 
 ```markdown
 ---
-path: src/gateway
-encoded: src__gateway
+path: path/to/directory
+encoded: path__to__directory
 modules:
-  - gateway
+  - module-id
 confidence: confirmed | inferred | unknown
 last_updated: YYYY-MM-DD
 read_when: "Editing files under this directory or tracing its ownership."
 ---
 
-# `src/gateway`
+# `path/to/directory`
 
 ## Purpose
 
@@ -201,6 +254,65 @@ See `module-links.md`.
 ## Related Changes
 
 See `changes.md`.
+
+## Related Flows
+
+- `flow-id`: why it matters.
+```
+
+## Flow Doc
+
+```markdown
+---
+id: flow-id
+name: Flow Name
+status: partial
+confidence: inferred
+last_updated: YYYY-MM-DD
+user_visible_surface:
+source_of_truth: []
+modules: []
+directories: []
+entrypoints: []
+---
+
+# Flow Name
+
+## Outcome
+
+What users, operators, integrations, or future agents rely on.
+
+## Causal Path
+
+Producer -> boundary crossings -> transport or contract -> consumer state -> output surface.
+
+## State Classification
+
+Files, databases, caches, generated artifacts, telemetry, debug traces, fixtures, transient runtime state, or disposable local state touched by the flow. State which item is source of truth when one exists.
+
+## Replay, Restore, Or Reconstruction
+
+How state or output is reconstructed after reload, restart, pagination, retry, rebuild, or recovery.
+
+## Contract
+
+Stable methods, message types, file formats, schemas, payload fields, or compatibility layers.
+
+## Consumer State And Output
+
+State mutations, derived state, renderers, exporters, operator surfaces, or integration outputs.
+
+## Failure, Ordering, And Identity
+
+Errors, retries, cancellation, ordering guarantees, deduplication keys, idempotency, and finalization rules when they affect visible or durable behavior.
+
+## Verification
+
+Relevant tests, scripts, manual checks, or missing coverage.
+
+## Known Gaps
+
+Open questions and uncertain links.
 ```
 
 ## Change Record
@@ -215,6 +327,8 @@ modules:
   - module-id
 directories:
   - path/to/directory
+flows:
+  - flow-id
 decisions:
   - ADR-NNNN
 commits:
@@ -251,6 +365,8 @@ modules:
   - module-id
 directories:
   - path/to/directory
+flows:
+  - flow-id
 related_changes:
   - CHG-YYYYMMDD-NNN
 confidence: confirmed | inferred | unknown

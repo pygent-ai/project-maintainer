@@ -24,15 +24,17 @@ skills/
 
 ## Version
 
-Current version: `0.0.1`
+Current version: `0.0.2`
 
 ## What The Skill Does
 
 - Initializes `.doc_project_maintainer/` in a target repository.
 - Documents project overview, architecture, module boundaries, and directory responsibilities.
-- Summarizes git history by module and directory.
+- Documents cross-boundary causal flows for user-visible, stateful, generated, integration, background, or operator-facing behavior.
+- Summarizes git history by module, directory, and flow when applicable.
 - Records feature, fix, refactor, and design-decision changes.
 - Tracks partial coverage with `project/build-plan.md` for large projects.
+- Requires a coverage closure audit before marking project-wide coverage or sync status as current.
 - Requires agents to update the maintenance artifact after code development when behavior or structure changes.
 - Enforces small file budgets so future agents can read only the relevant slices.
 
