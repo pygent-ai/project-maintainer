@@ -1,0 +1,1073 @@
+#!/usr/bin/env python3
+"""Inventory source symbols for project-maintainer coverage audits."""
+
+from __future__ import annotations
+
+import argparse
+import ast
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+from typing import Any
+
+
+SOURCE_EXTENSIONS = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".cs": "csharp",
+    ".c": "c",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".cxx": "cpp",
+    ".h": "c-header",
+    ".hpp": "cpp-header",
+    ".rb": "ruby",
+    ".php": "php",
+    ".swift": "swift",
+}
+
+EXCLUDED_PARTS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".doc_project_maintainer",
+    "node_modules",
+    "vendor",
+    "vendors",
+    "dist",
+    "build",
+    "out",
+    "target",
+    "coverage",
+    ".venv",
+    "venv",
+    "__pycache__",
+}
+
+GENERATED_NAME_PATTERNS = (
+    ".min.js",
+    ".bundle.js",
+    ".generated.",
+    ".g.",
+    "_generated.",
+    "generated_",
+)
+
+MULTI_AGENT_SOURCE_FILE_THRESHOLD = 20
+MULTI_AGENT_SYMBOL_THRESHOLD = 80
+MODULE_SYMBOL_THRESHOLD = 40
+MAX_SYMBOLS_PER_SLICE = 60
+
+
+def posix(path: Path) -> str:
+    return path.as_posix()
+
+
+def file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_text(path: Path) -> tuple[str | None, str | None]:
+    try:
+        return path.read_text(encoding="utf-8-sig"), None
+    except UnicodeDecodeError:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace"), "decoded with replacement characters"
+        except OSError as exc:
+            return None, str(exc)
+    except OSError as exc:
+        return None, str(exc)
+
+
+def git_ls_files(root: Path) -> list[Path] | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+    files: list[Path] = []
+    for raw in result.stdout.split(b"\0"):
+        if raw:
+            files.append(root / raw.decode("utf-8", errors="replace"))
+    return files
+
+
+def run_git(root: Path, *args: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout
+
+
+def git_head(root: Path) -> str | None:
+    output = run_git(root, "rev-parse", "HEAD")
+    return output.strip() if output else None
+
+
+def git_status_short(root: Path) -> list[str]:
+    output = run_git(root, "status", "--short", "--untracked-files=all")
+    if output is None:
+        return []
+    return [line for line in output.splitlines() if line.strip()]
+
+
+def status_path(entry: str) -> str:
+    path = entry[3:] if len(entry) > 3 else ""
+    if " -> " in path:
+        path = path.rsplit(" -> ", 1)[-1]
+    return path.strip().strip('"')
+
+
+def untracked_candidate_source_files(root: Path, status_entries: list[str]) -> list[str]:
+    candidates: list[str] = []
+    for entry in status_entries:
+        if not entry.startswith("?? "):
+            continue
+        raw_path = status_path(entry)
+        if not raw_path:
+            continue
+        relative = Path(raw_path)
+        path = root / relative
+        if not path.is_file() or not language_for(path):
+            continue
+        excluded, _reason = is_generated_or_excluded(relative)
+        if excluded:
+            continue
+        candidates.append(posix(relative))
+    return sorted(candidates)
+
+
+def is_generated_or_excluded(relative: Path) -> tuple[bool, str | None]:
+    parts = {part.lower() for part in relative.parts}
+    excluded = parts.intersection(EXCLUDED_PARTS)
+    if excluded:
+        return True, f"excluded path component: {sorted(excluded)[0]}"
+
+    name = relative.name.lower()
+    if name.endswith(".d.ts"):
+        return True, "type declaration file"
+    for pattern in GENERATED_NAME_PATTERNS:
+        if pattern in name:
+            return True, f"generated filename pattern: {pattern}"
+    return False, None
+
+
+def language_for(path: Path) -> str | None:
+    return SOURCE_EXTENSIONS.get(path.suffix.lower())
+
+
+def stable_source_files(root: Path) -> tuple[list[Path], str]:
+    files = git_ls_files(root)
+    source = "git ls-files"
+    if files is None:
+        source = "filesystem walk"
+        files = [path for path in root.rglob("*") if path.is_file()]
+
+    selected: list[Path] = []
+    for path in files:
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        excluded, _reason = is_generated_or_excluded(relative)
+        if excluded:
+            continue
+        if language_for(path):
+            selected.append(path)
+    return sorted(selected), source
+
+
+def symbol(
+    *,
+    name: str,
+    kind: str,
+    line: int | None,
+    end_line: int | None = None,
+    class_name: str | None = None,
+    confidence: str,
+    extractor: str,
+) -> dict[str, Any]:
+    qualified = f"{class_name}.{name}" if class_name and kind == "method" else name
+    item: dict[str, Any] = {
+        "symbol": qualified,
+        "name": name,
+        "kind": kind,
+        "line": line,
+        "end_line": end_line,
+        "confidence": confidence,
+        "extractor": extractor,
+    }
+    if class_name:
+        item["class"] = class_name
+    return item
+
+
+def extract_python(path: Path, text: str) -> tuple[list[dict[str, Any]], list[str], bool]:
+    warnings: list[str] = []
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError as exc:
+        return [], [f"python ast parse failed: {exc}"], True
+
+    symbols: list[dict[str, Any]] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            symbols.append(
+                symbol(
+                    name=node.name,
+                    kind="function",
+                    line=node.lineno,
+                    end_line=getattr(node, "end_lineno", None),
+                    confidence="confirmed",
+                    extractor="python_ast",
+                )
+            )
+        elif isinstance(node, ast.ClassDef):
+            symbols.append(
+                symbol(
+                    name=node.name,
+                    kind="class",
+                    line=node.lineno,
+                    end_line=getattr(node, "end_lineno", None),
+                    confidence="confirmed",
+                    extractor="python_ast",
+                )
+            )
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    symbols.append(
+                        symbol(
+                            name=item.name,
+                            kind="method",
+                            class_name=node.name,
+                            line=item.lineno,
+                            end_line=getattr(item, "end_lineno", None),
+                            confidence="confirmed",
+                            extractor="python_ast",
+                        )
+                    )
+    return symbols, warnings, False
+
+
+def extract_ctags(path: Path) -> tuple[list[dict[str, Any]], list[str], bool] | None:
+    ctags = shutil.which("ctags")
+    if not ctags:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                ctags,
+                "--output-format=json",
+                "--fields=+nK",
+                "--extras=",
+                "-f",
+                "-",
+                str(path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return [], [f"ctags failed: {exc}"], True
+    if result.returncode != 0:
+        return None
+
+    symbols: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            warnings.append("ctags produced non-json output")
+            continue
+        kind = str(entry.get("kind", "")).lower()
+        name = entry.get("name")
+        if not name:
+            continue
+        line_number = entry.get("line")
+        scope = entry.get("scope")
+        scope_kind = str(entry.get("scopeKind", "")).lower()
+
+        if kind in {"class", "struct", "interface", "trait"}:
+            symbols.append(
+                symbol(
+                    name=str(name),
+                    kind="class",
+                    line=line_number,
+                    confidence="tool",
+                    extractor="ctags",
+                )
+            )
+        elif kind in {"method", "member"} or scope_kind in {"class", "struct", "interface", "trait"}:
+            if scope:
+                symbols.append(
+                    symbol(
+                        name=str(name),
+                        kind="method",
+                        class_name=str(scope).split(".")[-1],
+                        line=line_number,
+                        confidence="tool",
+                        extractor="ctags",
+                    )
+                )
+        elif kind in {"function", "func", "procedure", "subroutine"}:
+            symbols.append(
+                symbol(
+                    name=str(name),
+                    kind="function",
+                    line=line_number,
+                    confidence="tool",
+                    extractor="ctags",
+                )
+            )
+    return symbols, warnings, False
+
+
+CLASS_RE = re.compile(r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)")
+FUNCTION_RE = re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(")
+ASSIGNED_FUNCTION_RE = re.compile(
+    r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)"
+)
+METHOD_RE = re.compile(
+    r"^\s*(?:public|private|protected|static|async|override|final|open|suspend|\s)*([A-Za-z_$][\w$]*)\s*\([^;]*\)\s*(?:\{|=>)"
+)
+GO_FUNCTION_RE = re.compile(r"^\s*func\s+([A-Za-z_]\w*)\s*\(")
+GO_METHOD_RE = re.compile(r"^\s*func\s+\([^)]*\*?\s*([A-Za-z_]\w*)\)\s+([A-Za-z_]\w*)\s*\(")
+RUST_FUNCTION_RE = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*\(")
+RUST_IMPL_RE = re.compile(r"^\s*impl(?:<[^>]+>)?\s+([A-Za-z_]\w*)")
+RUBY_CLASS_RE = re.compile(r"^\s*class\s+([A-Z]\w*)")
+RUBY_DEF_RE = re.compile(r"^\s*def\s+(?:self\.)?([A-Za-z_]\w*[!?=]?)")
+
+
+def brace_delta(line: str) -> int:
+    return line.count("{") - line.count("}")
+
+
+def extract_heuristic(path: Path, text: str, language: str) -> tuple[list[dict[str, Any]], list[str], bool]:
+    symbols: list[dict[str, Any]] = []
+    warnings = [f"heuristic extractor used for {language}; manual review required for current coverage"]
+    class_stack: list[tuple[str, int]] = []
+    impl_stack: list[tuple[str, int]] = []
+    depth = 0
+
+    for index, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        while class_stack and depth < class_stack[-1][1]:
+            class_stack.pop()
+        while impl_stack and depth < impl_stack[-1][1]:
+            impl_stack.pop()
+
+        if language in {"javascript", "typescript", "java", "kotlin", "csharp", "php", "swift"}:
+            class_match = CLASS_RE.match(line)
+            if class_match:
+                class_name = class_match.group(1)
+                symbols.append(
+                    symbol(name=class_name, kind="class", line=index, confidence="heuristic", extractor="heuristic")
+                )
+                class_stack.append((class_name, depth + 1))
+            elif class_stack:
+                method_match = METHOD_RE.match(line)
+                if method_match and method_match.group(1) not in {"if", "for", "while", "switch", "catch"}:
+                    symbols.append(
+                        symbol(
+                            name=method_match.group(1),
+                            kind="method",
+                            class_name=class_stack[-1][0],
+                            line=index,
+                            confidence="heuristic",
+                            extractor="heuristic",
+                        )
+                    )
+            elif depth == 0:
+                function_match = FUNCTION_RE.match(line) or ASSIGNED_FUNCTION_RE.match(line)
+                if function_match:
+                    symbols.append(
+                        symbol(
+                            name=function_match.group(1),
+                            kind="function",
+                            line=index,
+                            confidence="heuristic",
+                            extractor="heuristic",
+                        )
+                    )
+        elif language == "go":
+            method_match = GO_METHOD_RE.match(line)
+            if method_match:
+                symbols.append(
+                    symbol(
+                        name=method_match.group(2),
+                        kind="method",
+                        class_name=method_match.group(1),
+                        line=index,
+                        confidence="heuristic",
+                        extractor="heuristic",
+                    )
+                )
+            else:
+                function_match = GO_FUNCTION_RE.match(line)
+                if function_match:
+                    symbols.append(
+                        symbol(
+                            name=function_match.group(1),
+                            kind="function",
+                            line=index,
+                            confidence="heuristic",
+                            extractor="heuristic",
+                        )
+                    )
+        elif language == "rust":
+            impl_match = RUST_IMPL_RE.match(line)
+            if impl_match:
+                impl_stack.append((impl_match.group(1), depth + 1))
+            function_match = RUST_FUNCTION_RE.match(line)
+            if function_match:
+                if impl_stack:
+                    symbols.append(
+                        symbol(
+                            name=function_match.group(1),
+                            kind="method",
+                            class_name=impl_stack[-1][0],
+                            line=index,
+                            confidence="heuristic",
+                            extractor="heuristic",
+                        )
+                    )
+                elif depth == 0:
+                    symbols.append(
+                        symbol(
+                            name=function_match.group(1),
+                            kind="function",
+                            line=index,
+                            confidence="heuristic",
+                            extractor="heuristic",
+                        )
+                    )
+        elif language == "ruby":
+            class_match = RUBY_CLASS_RE.match(line)
+            if class_match:
+                class_stack.append((class_match.group(1), len(line) - len(line.lstrip()) + 1))
+                symbols.append(
+                    symbol(name=class_match.group(1), kind="class", line=index, confidence="heuristic", extractor="heuristic")
+                )
+            def_match = RUBY_DEF_RE.match(line)
+            if def_match:
+                if class_stack:
+                    symbols.append(
+                        symbol(
+                            name=def_match.group(1),
+                            kind="method",
+                            class_name=class_stack[-1][0],
+                            line=index,
+                            confidence="heuristic",
+                            extractor="heuristic",
+                        )
+                    )
+                else:
+                    symbols.append(
+                        symbol(
+                            name=def_match.group(1),
+                            kind="function",
+                            line=index,
+                            confidence="heuristic",
+                            extractor="heuristic",
+                        )
+                    )
+
+        if language != "ruby":
+            depth += brace_delta(stripped)
+
+    return symbols, warnings, True
+
+
+def expected_doc_paths(relative: Path, item: dict[str, Any]) -> dict[str, str]:
+    file_dir = Path("code") / relative
+    file_doc = file_dir / f"{relative.name}.md"
+    if item["kind"] == "function":
+        entry_doc = file_dir / f"{item['name']}.md"
+    elif item["kind"] == "method":
+        class_name = item.get("class", "Unknown")
+        entry_doc = file_dir / f"Class {class_name}" / f"{class_name}.{item['name']}.md"
+    elif item["kind"] == "class":
+        entry_doc = file_dir / f"Class {item['name']}" / f"Class {item['name']}.md"
+    else:
+        entry_doc = file_doc
+    return {"file_doc": posix(file_doc), "entry_doc": posix(entry_doc)}
+
+
+def heading_has_content(text: str, heading: str) -> bool:
+    pattern = re.compile(rf"^##\s+{re.escape(heading)}\s*$", re.MULTILINE)
+    match = pattern.search(text)
+    if not match:
+        return False
+    rest = text[match.end() :]
+    next_heading = re.search(r"^##\s+", rest, re.MULTILINE)
+    content = rest[: next_heading.start()] if next_heading else rest
+    return bool(content.strip())
+
+
+def has_health(text: str) -> bool:
+    return bool(re.search(r"(?m)^health:\s*$", text))
+
+
+def verify_docs(root: Path, relative: Path, symbols: list[dict[str, Any]], docs_root: Path) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "file_doc": posix(Path("code") / relative / f"{relative.name}.md"),
+        "file_doc_exists": False,
+        "missing_entry_docs": [],
+        "missing_actual_role": [],
+        "missing_health": [],
+    }
+    file_doc_path = docs_root / result["file_doc"]
+    result["file_doc_exists"] = file_doc_path.exists()
+
+    for item in symbols:
+        if item["kind"] not in {"function", "method"}:
+            continue
+        docs = expected_doc_paths(relative, item)
+        item["docs"] = docs
+        entry_path = docs_root / docs["entry_doc"]
+        item["doc_exists"] = entry_path.exists()
+        item["has_actual_role"] = False
+        item["has_health"] = False
+        if not entry_path.exists():
+            result["missing_entry_docs"].append(item["symbol"])
+            continue
+        text, error = read_text(entry_path)
+        if error or text is None:
+            result["missing_actual_role"].append(item["symbol"])
+            result["missing_health"].append(item["symbol"])
+            continue
+        item["has_actual_role"] = heading_has_content(text, "Actual Role")
+        item["has_health"] = has_health(text)
+        if not item["has_actual_role"]:
+            result["missing_actual_role"].append(item["symbol"])
+        if not item["has_health"]:
+            result["missing_health"].append(item["symbol"])
+    return result
+
+
+def inventory_file(path: Path, root: Path, docs_root: Path | None, verify: bool) -> dict[str, Any]:
+    relative = path.relative_to(root)
+    language = language_for(path)
+    text, read_warning = read_text(path)
+    warnings: list[str] = []
+    if read_warning:
+        warnings.append(read_warning)
+    if text is None or language is None:
+        return {
+            "path": posix(relative),
+            "language": language,
+            "sha256": None,
+            "extractor": "none",
+            "confidence": "unknown",
+            "requires_review": True,
+            "symbols": [],
+            "warnings": warnings or ["file could not be read or language is unsupported"],
+        }
+
+    extractor = "heuristic"
+    confidence = "heuristic"
+    requires_review = True
+    symbols: list[dict[str, Any]]
+
+    if language == "python":
+        symbols, extractor_warnings, requires_review = extract_python(path, text)
+        warnings.extend(extractor_warnings)
+        if requires_review:
+            fallback_symbols, fallback_warnings, _ = extract_heuristic(path, text, language)
+            if fallback_symbols:
+                symbols = fallback_symbols
+            warnings.extend(fallback_warnings)
+            extractor = "heuristic"
+            confidence = "heuristic"
+        else:
+            extractor = "python_ast"
+            confidence = "confirmed"
+    else:
+        ctags_result = extract_ctags(path)
+        if ctags_result is not None:
+            symbols, extractor_warnings, requires_review = ctags_result
+            warnings.extend(extractor_warnings)
+            extractor = "ctags"
+            confidence = "tool"
+        else:
+            symbols, extractor_warnings, requires_review = extract_heuristic(path, text, language)
+            warnings.extend(extractor_warnings)
+            extractor = "heuristic"
+            confidence = "heuristic"
+
+    result: dict[str, Any] = {
+        "path": posix(relative),
+        "language": language,
+        "sha256": file_hash(path),
+        "extractor": extractor,
+        "confidence": confidence,
+        "requires_review": requires_review,
+        "symbols": symbols,
+        "warnings": warnings,
+    }
+    if verify and docs_root is not None:
+        result["doc_verification"] = verify_docs(root, relative, symbols, docs_root)
+    return result
+
+
+def build_summary(files: list[dict[str, Any]], verify_docs_enabled: bool) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "source_files": len(files),
+        "symbols": sum(len(item["symbols"]) for item in files),
+        "top_level_functions": 0,
+        "classes": 0,
+        "class_methods": 0,
+        "requires_review_files": 0,
+        "extractors": {},
+        "missing_file_docs": 0,
+        "missing_entry_docs": 0,
+        "missing_actual_role": 0,
+        "missing_health": 0,
+    }
+    for file_item in files:
+        summary["extractors"][file_item["extractor"]] = summary["extractors"].get(file_item["extractor"], 0) + 1
+        if file_item["requires_review"]:
+            summary["requires_review_files"] += 1
+        for item in file_item["symbols"]:
+            if item["kind"] == "function":
+                summary["top_level_functions"] += 1
+            elif item["kind"] == "class":
+                summary["classes"] += 1
+            elif item["kind"] == "method":
+                summary["class_methods"] += 1
+        if verify_docs_enabled and "doc_verification" in file_item:
+            verification = file_item["doc_verification"]
+            if not verification["file_doc_exists"]:
+                summary["missing_file_docs"] += 1
+            summary["missing_entry_docs"] += len(verification["missing_entry_docs"])
+            summary["missing_actual_role"] += len(verification["missing_actual_role"])
+            summary["missing_health"] += len(verification["missing_health"])
+    return summary
+
+
+def relative_output_path(root: Path, path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        return posix(path.resolve().relative_to(root))
+    except ValueError:
+        return str(path.resolve())
+
+
+def load_previous_coverage_map(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def previous_files_by_path(previous_map: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not previous_map:
+        return {}
+    files = previous_map.get("files")
+    if not isinstance(files, list):
+        return {}
+    return {str(item.get("path")): item for item in files if isinstance(item, dict) and item.get("path")}
+
+
+def doc_state(value: bool | None, verify_docs_enabled: bool) -> str:
+    if not verify_docs_enabled:
+        return "not_checked"
+    return "present" if value else "missing"
+
+
+def symbol_coverage_state(item: dict[str, Any], verify_docs_enabled: bool) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "symbol": item["symbol"],
+        "name": item["name"],
+        "kind": item["kind"],
+        "line": item.get("line"),
+        "confidence": item.get("confidence"),
+        "extractor": item.get("extractor"),
+    }
+    if item.get("class"):
+        state["class"] = item["class"]
+
+    if item["kind"] not in {"function", "method"}:
+        state["doc_status"] = "not_required_for_closure"
+        state["actual_role_status"] = "not_required_for_closure"
+        state["health_status"] = "not_required_for_closure"
+        return state
+
+    docs = item.get("docs")
+    if docs:
+        state["entry_doc"] = docs.get("entry_doc")
+    state["doc_status"] = doc_state(item.get("doc_exists"), verify_docs_enabled)
+    state["actual_role_status"] = doc_state(item.get("has_actual_role"), verify_docs_enabled)
+    state["health_status"] = doc_state(item.get("has_health"), verify_docs_enabled)
+    return state
+
+
+def required_symbol_is_documented(symbol_state: dict[str, Any]) -> bool:
+    if symbol_state["kind"] not in {"function", "method"}:
+        return True
+    return (
+        symbol_state["doc_status"] == "present"
+        and symbol_state["actual_role_status"] == "present"
+        and symbol_state["health_status"] == "present"
+    )
+
+
+def file_coverage_status(
+    file_item: dict[str, Any],
+    previous_item: dict[str, Any] | None,
+    verify_docs_enabled: bool,
+) -> str:
+    previous_hash = previous_item.get("source_hash") if previous_item else None
+    if previous_hash and previous_hash != file_item.get("sha256"):
+        return "stale"
+    if file_item.get("requires_review"):
+        return "pending_review"
+    if not verify_docs_enabled:
+        return "not_checked"
+
+    verification = file_item.get("doc_verification", {})
+    if not verification.get("file_doc_exists"):
+        return "pending"
+    if verification.get("missing_entry_docs") or verification.get("missing_actual_role") or verification.get("missing_health"):
+        return "pending"
+    return "documented"
+
+
+def actionable_symbol_count(file_entry: dict[str, Any]) -> int:
+    symbols = [item for item in file_entry["symbols"] if item["kind"] in {"function", "method"}]
+    if file_entry["status"] in {"stale", "pending_review", "not_checked"}:
+        return len(symbols)
+    return sum(1 for item in symbols if not required_symbol_is_documented(item))
+
+
+def module_key(path: str) -> str:
+    parts = [part for part in path.split("/") if part]
+    if not parts:
+        return "(root)"
+    if len(parts) == 1:
+        return "(root)"
+    return parts[0]
+
+
+def slice_slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "root"
+
+
+def count_status(files: list[dict[str, Any]], status: str) -> int:
+    return sum(1 for item in files if item["status"] == status)
+
+
+def build_suggested_slices(files: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    actionable = [item for item in files if item["status"] != "documented"]
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for file_entry in actionable:
+        groups.setdefault(module_key(file_entry["path"]), []).append(file_entry)
+
+    suggested: list[dict[str, Any]] = []
+    assigned: dict[str, str] = {}
+    for group_name in sorted(groups):
+        chunk: list[dict[str, Any]] = []
+        chunk_symbols = 0
+        index = 1
+        for file_entry in sorted(groups[group_name], key=lambda item: item["path"]):
+            symbol_count = len(file_entry["symbols"])
+            if chunk and chunk_symbols + symbol_count > MAX_SYMBOLS_PER_SLICE:
+                slice_id = f"{slice_slug(group_name)}-{index:03d}"
+                suggested.append(slice_entry(slice_id, group_name, chunk))
+                for item in chunk:
+                    assigned[item["path"]] = slice_id
+                index += 1
+                chunk = []
+                chunk_symbols = 0
+            chunk.append(file_entry)
+            chunk_symbols += symbol_count
+        if chunk:
+            slice_id = f"{slice_slug(group_name)}-{index:03d}"
+            suggested.append(slice_entry(slice_id, group_name, chunk))
+            for item in chunk:
+                assigned[item["path"]] = slice_id
+    return suggested, assigned
+
+
+def slice_entry(slice_id: str, group_name: str, files: list[dict[str, Any]]) -> dict[str, Any]:
+    statuses = sorted({item["status"] for item in files})
+    return {
+        "id": slice_id,
+        "kind": "module" if group_name != "(root)" else "root",
+        "module": group_name,
+        "files": [item["path"] for item in files],
+        "source_files": len(files),
+        "symbols": sum(len(item["symbols"]) for item in files),
+        "pending_symbols": sum(actionable_symbol_count(item) for item in files),
+        "statuses": statuses,
+        "reason": "Complete or review files before project-wide coverage can be current.",
+    }
+
+
+def build_coverage_files(
+    inventory_files: list[dict[str, Any]],
+    previous_by_path: dict[str, dict[str, Any]],
+    current_head: str | None,
+    verify_docs_enabled: bool,
+) -> list[dict[str, Any]]:
+    coverage_files: list[dict[str, Any]] = []
+    for file_item in inventory_files:
+        previous_item = previous_by_path.get(file_item["path"])
+        symbols = [symbol_coverage_state(item, verify_docs_enabled) for item in file_item["symbols"]]
+        verification = file_item.get("doc_verification", {})
+        file_entry: dict[str, Any] = {
+            "path": file_item["path"],
+            "language": file_item["language"],
+            "source_hash": file_item.get("sha256"),
+            "previous_hash": previous_item.get("source_hash") if previous_item else None,
+            "last_scanned_commit": current_head,
+            "extractor": file_item["extractor"],
+            "confidence": file_item["confidence"],
+            "requires_review": file_item["requires_review"],
+            "status": file_coverage_status(file_item, previous_item, verify_docs_enabled),
+            "file_doc": verification.get("file_doc"),
+            "file_doc_status": doc_state(verification.get("file_doc_exists"), verify_docs_enabled),
+            "symbols": symbols,
+            "blockers": [],
+        }
+        if file_item.get("warnings"):
+            file_entry["blockers"].extend(file_item["warnings"])
+        if file_entry["status"] == "stale":
+            file_entry["blockers"].append("source hash changed since previous coverage map")
+        if file_entry["status"] == "pending_review":
+            file_entry["blockers"].append("extractor confidence requires manual review before current coverage")
+        coverage_files.append(file_entry)
+    return coverage_files
+
+
+def removed_coverage_files(
+    previous_by_path: dict[str, dict[str, Any]],
+    current_paths: set[str],
+    current_head: str | None,
+) -> list[dict[str, Any]]:
+    removed: list[dict[str, Any]] = []
+    for path, previous in sorted(previous_by_path.items()):
+        if path in current_paths:
+            continue
+        removed.append(
+            {
+                "path": path,
+                "status": "removed",
+                "previous_hash": previous.get("source_hash"),
+                "previous_status": previous.get("status"),
+                "last_scanned_commit": current_head,
+            }
+        )
+    return removed
+
+
+def build_coverage_summary(
+    files: list[dict[str, Any]],
+    removed_files: list[dict[str, Any]],
+    untracked_candidates: list[str],
+) -> dict[str, Any]:
+    required_symbols = [
+        symbol
+        for file_entry in files
+        for symbol in file_entry["symbols"]
+        if symbol["kind"] in {"function", "method"}
+    ]
+    documented_required_symbols = sum(1 for symbol in required_symbols if required_symbol_is_documented(symbol))
+    return {
+        "source_files": len(files),
+        "documented_files": count_status(files, "documented"),
+        "pending_files": count_status(files, "pending"),
+        "stale_files": count_status(files, "stale"),
+        "pending_review_files": count_status(files, "pending_review"),
+        "not_checked_files": count_status(files, "not_checked"),
+        "removed_files": len(removed_files),
+        "untracked_candidate_source_files": len(untracked_candidates),
+        "required_symbols": len(required_symbols),
+        "documented_required_symbols": documented_required_symbols,
+        "pending_required_symbols": len(required_symbols) - documented_required_symbols,
+    }
+
+
+def build_coverage_map(
+    *,
+    root: Path,
+    inventory: dict[str, Any],
+    inventory_output_path: Path | None,
+    coverage_output_path: Path | None,
+    previous_map: dict[str, Any] | None,
+    verify_docs_enabled: bool,
+) -> dict[str, Any]:
+    current_head = git_head(root)
+    status_entries = git_status_short(root)
+    untracked_candidates = untracked_candidate_source_files(root, status_entries)
+    previous_by_path = previous_files_by_path(previous_map)
+    coverage_files = build_coverage_files(
+        inventory["files"],
+        previous_by_path,
+        current_head,
+        verify_docs_enabled,
+    )
+    suggested_slices, assigned = build_suggested_slices(coverage_files)
+    for file_entry in coverage_files:
+        file_entry["assigned_slice"] = assigned.get(file_entry["path"])
+
+    current_paths = {item["path"] for item in coverage_files}
+    removed_files = removed_coverage_files(previous_by_path, current_paths, current_head)
+    module_symbol_counts: dict[str, int] = {}
+    for file_entry in coverage_files:
+        key = module_key(file_entry["path"])
+        module_symbol_counts[key] = module_symbol_counts.get(key, 0) + len(file_entry["symbols"])
+
+    max_module_symbols = max(module_symbol_counts.values(), default=0)
+    recommended_mode = (
+        "multi-agent"
+        if len(coverage_files) > MULTI_AGENT_SOURCE_FILE_THRESHOLD
+        or inventory["summary"]["symbols"] > MULTI_AGENT_SYMBOL_THRESHOLD
+        or max_module_symbols > MODULE_SYMBOL_THRESHOLD
+        else "single-agent"
+    )
+    return {
+        "schema": "project-maintainer.coverage-map.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "repo_root": str(root),
+        "git": {
+            "head": current_head,
+            "status_short": status_entries,
+            "untracked_candidate_source_files": untracked_candidates,
+        },
+        "inventory": {
+            "path": relative_output_path(root, inventory_output_path),
+            "listing_source": inventory["listing_source"],
+            "summary": inventory["summary"],
+        },
+        "thresholds": {
+            "multi_agent_source_files": MULTI_AGENT_SOURCE_FILE_THRESHOLD,
+            "multi_agent_symbols": MULTI_AGENT_SYMBOL_THRESHOLD,
+            "module_symbols": MODULE_SYMBOL_THRESHOLD,
+            "max_symbols_per_slice": MAX_SYMBOLS_PER_SLICE,
+        },
+        "recommended_mode": recommended_mode,
+        "summary": build_coverage_summary(coverage_files, removed_files, untracked_candidates),
+        "suggested_slices": suggested_slices,
+        "files": coverage_files,
+        "removed_files": removed_files,
+        "notes": [
+            "Use documented only when the file hash is current, extractor confidence is sufficient, and required function/method docs include Actual Role plus health.",
+            "Use suggested_slices as the coordinator queue for subagents; integrate outputs centrally before marking coverage current.",
+        ],
+        "coverage_output": relative_output_path(root, coverage_output_path),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("repo_root", type=Path, help="Repository root to inventory")
+    parser.add_argument("--output", type=Path, help="Write JSON inventory to this path")
+    parser.add_argument("--coverage-map-output", type=Path, help="Write git-linked coverage map JSON to this path")
+    parser.add_argument(
+        "--docs-root",
+        type=Path,
+        help="Project-maintainer artifact root for doc verification; defaults to <repo>/.doc_project_maintainer",
+    )
+    parser.add_argument("--verify-docs", action="store_true", help="Check expected entry docs and required fields")
+    parser.add_argument("--fail-on-review", action="store_true", help="Exit 1 when any file needs manual review")
+    parser.add_argument("--fail-on-missing-docs", action="store_true", help="Exit 1 when required docs are missing")
+    parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    args = parser.parse_args()
+
+    root = args.repo_root.resolve()
+    docs_root = (args.docs_root or (root / ".doc_project_maintainer")).resolve()
+    source_files, listing_source = stable_source_files(root)
+    files = [inventory_file(path, root, docs_root, args.verify_docs) for path in source_files]
+    summary = build_summary(files, args.verify_docs)
+    inventory = {
+        "schema": "project-maintainer.source-symbol-inventory.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "repo_root": str(root),
+        "listing_source": listing_source,
+        "extractor_priority": ["python_ast", "ctags", "heuristic"],
+        "available_extractors": {
+            "python_ast": True,
+            "ctags": shutil.which("ctags") is not None,
+            "heuristic": True,
+        },
+        "summary": summary,
+        "files": files,
+    }
+
+    encoded = json.dumps(inventory, indent=2 if args.pretty else None, sort_keys=True)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(encoded + "\n", encoding="utf-8")
+    else:
+        print(encoded)
+
+    if args.coverage_map_output:
+        previous_map = load_previous_coverage_map(args.coverage_map_output)
+        coverage_map = build_coverage_map(
+            root=root,
+            inventory=inventory,
+            inventory_output_path=args.output,
+            coverage_output_path=args.coverage_map_output,
+            previous_map=previous_map,
+            verify_docs_enabled=args.verify_docs,
+        )
+        coverage_encoded = json.dumps(coverage_map, indent=2 if args.pretty else None, sort_keys=True)
+        args.coverage_map_output.parent.mkdir(parents=True, exist_ok=True)
+        args.coverage_map_output.write_text(coverage_encoded + "\n", encoding="utf-8")
+
+    should_fail = False
+    if args.fail_on_review and summary["requires_review_files"]:
+        should_fail = True
+    if args.fail_on_missing_docs and (
+        summary["missing_file_docs"]
+        or summary["missing_entry_docs"]
+        or summary["missing_actual_role"]
+        or summary["missing_health"]
+    ):
+        should_fail = True
+    return 1 if should_fail else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

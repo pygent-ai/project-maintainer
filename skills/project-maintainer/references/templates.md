@@ -21,15 +21,17 @@ Sync status: current | partial | stale | unknown
 
 ## How To Read
 
-Start with `INDEX.md`, then `manifest.yaml`, then the module, directory, or flow relevant to the task.
+Start with `INDEX.md`, then `manifest.yaml`, then the module, directory, code symbol, or flow relevant to the task.
 
 ## Maintenance Rules
 
 - Keep files within the size budgets in `references/artifact-structure.md`.
 - Update module docs, directory docs, flow docs, changes, and decisions after behavior or structure changes.
+- Update code symbol docs and function or method health after source behavior, contracts, side effects, risks, or tests change.
 - Check existing artifact sync status before relying on it.
-- Do not mark the artifact `current` without a recorded coverage closure audit or skip reason.
-- Do not mark cross-boundary behavior `current` unless required flows are documented, pending, or out of scope.
+- Do not mark the artifact `current` without a recorded coverage closure audit and no actionable pending slices.
+- Do not mark cross-boundary behavior `current` unless required flows are documented or out of scope.
+- Do not mark code symbol coverage `current` unless every stable source file has a symbol inventory and every top-level function and class method has an entry doc with `Actual Role` and health.
 - Mark uncertain claims with `confidence: inferred` or `confidence: unknown`.
 ```
 
@@ -51,7 +53,8 @@ sync:
     tracked_paths: "not_audited" # not_audited | mapped_or_dispositioned
     untracked_paths: "not_audited" # not_audited | classified | not_applicable
     flow_traces: "not_audited" # not_audited | documented_or_dispositioned
-    notes: "Do not mark current until stable tracked paths and required flows are mapped, pending, or out of scope."
+    code_symbols: "not_audited" # not_audited | every_required_symbol_documented
+    notes: "Do not mark current until stable tracked paths and required flows are mapped or out of scope, every top-level function and class method has Actual Role plus health, and no actionable pending slices remain."
   pending:
     - id: "SYNC-YYYYMMDD-001"
       reason: "Docs may not reflect recent changes."
@@ -60,6 +63,7 @@ sync:
       modules:
         - "module-id"
       flows: []
+      code_symbols: []
       created: "YYYY-MM-DD"
 
 project:
@@ -70,8 +74,11 @@ project:
     architecture: "project/architecture.md"
     glossary: "project/glossary.md"
     build_plan: "project/build-plan.md"
+    source_symbol_inventory: "project/source-symbol-inventory.json"
+    coverage_map: "project/coverage-map.json"
     open_questions: "project/open-questions.md"
     flows_dir: "project/flows"
+    code_dir: "code"
 
 modules:
   - id: "module-id"
@@ -89,6 +96,7 @@ modules:
       - "tests/module-id"
     related_decisions: []
     related_flows: []
+    related_code_symbols: []
     recent_changes: []
     coverage:
       status: "partial"
@@ -105,6 +113,7 @@ directories:
     related_changes: []
     related_decisions: []
     related_flows: []
+    related_code_symbols: []
     coverage:
       status: "partial"
       last_scanned: "YYYY-MM-DD"
@@ -121,9 +130,74 @@ flows:
     source_of_truth: []
     related_changes: []
     related_decisions: []
+    code_symbols: []
     coverage:
       status: "partial"
       last_scanned: "YYYY-MM-DD"
+
+code_symbols:
+  - symbol: "A.a"
+    kind: "method"
+    source: "src/foo/a.py"
+    doc: "code/src/foo/a.py/Class A/A.a.md"
+    detail_dir: "code/src/foo/a.py/Class A/A.a"
+    modules:
+      - "module-id"
+    directories:
+      - "src/foo"
+    flows: []
+    health:
+      overall: "watch"
+      name_behavior_match: "partial"
+      responsibility_focus: "mixed"
+      complexity: "medium"
+      boundary_safety: "partial"
+      test_coverage: "partial"
+    coverage:
+      status: "partial"
+      last_scanned: "YYYY-MM-DD"
+    confidence: "inferred"
+
+code_symbol_inventory:
+  generated_by: "scripts/inventory_symbols.py"
+  source_symbol_inventory: "project/source-symbol-inventory.json"
+  coverage_map: "project/coverage-map.json"
+  extractor_priority:
+    - "python_ast"
+    - "ctags"
+    - "heuristic"
+  requires_review_files: 0
+  missing_file_docs: 0
+  missing_entry_docs: 0
+  missing_actual_role: 0
+  missing_health: 0
+  source_files:
+    total: 0
+    documented: 0
+    pending: 0
+    out_of_scope: 0
+  top_level_functions:
+    total: 0
+    documented: 0
+    pending: 0
+    out_of_scope: 0
+  class_methods:
+    total: 0
+    documented: 0
+    pending: 0
+    out_of_scope: 0
+
+coverage_map:
+  generated_by: "scripts/inventory_symbols.py"
+  path: "project/coverage-map.json"
+  git_head: null
+  git_status: "not_checked"
+  recommended_mode: "single-agent" # single-agent | multi-agent
+  pending_files: 0
+  stale_files: 0
+  pending_review_files: 0
+  candidate_project_files: 0
+  suggested_slices: []
 ```
 
 ## Build Plan
@@ -134,6 +208,7 @@ last_updated: YYYY-MM-DD
 sync_status: current | partial | stale | unknown
 coverage_status: planned | partial | current
 flow_coverage_status: planned | partial | current
+code_symbol_coverage_status: planned | partial | current
 ---
 
 # Build Plan
@@ -145,6 +220,24 @@ flow_coverage_status: planned | partial | current
 - Known stale areas:
 - Known incomplete areas:
 - Known incomplete flow slices:
+- Known incomplete code symbol slices:
+- Actionable pending slices that keep coverage partial:
+- Every stable source file inventoried: yes | no
+- Every top-level function documented with `Actual Role` and health: yes | no
+- Every class method documented with `Actual Role` and health: yes | no
+- Inventory command:
+- Inventory extractor summary:
+- Coverage map:
+- Coverage map recommended mode:
+- Git head scanned:
+- Dirty worktree state:
+- Stale files:
+- Untracked candidate project files:
+- Files requiring manual review:
+- Missing file docs:
+- Missing entry docs:
+- Missing `Actual Role`:
+- Missing health fields:
 
 ## Completed Slices
 
@@ -154,20 +247,41 @@ flow_coverage_status: planned | partial | current
 
 - `module-or-path`: why it remains and suggested next step
 
+Pending slices mean coverage remains `partial` until the slice is completed or explicitly marked out of scope.
+
 ## Pending Flow Slices
 
 - `flow-id`: required outcome or state, missing trace link, and suggested next step
+
+Pending flow slices mean flow coverage remains `partial` until the flow is completed or explicitly marked out of scope.
+
+## Pending Code Symbol Slices
+
+- `source-or-symbol`: missing stable source file inventory, top-level function entry doc, class method entry doc, health, or detail coverage and suggested next step
+
+Pending code symbol slices mean code symbol coverage remains `partial` until the slice is completed or explicitly marked out of scope.
+
+## Suggested Subagent Queue
+
+- `slice-id`: files, symbols, status, assigned agent, blocker, and integration state from `project/coverage-map.json`
+
+Use this queue when the coverage map recommends `multi-agent`. The coordinator owns assignment, merge, manifest/index updates, and rerunning the inventory command after each integrated batch.
 
 ## Coverage Closure Audit
 
 - Audit source:
 - Tracked path audit:
 - Unmapped stable tracked paths:
-- Pending tracked paths:
+- Actionable pending slices:
 - Out-of-scope tracked paths:
 - Untracked path disposition:
 - Generated/local/runtime exclusions:
 - Flow trace disposition:
+- Code symbol disposition:
+- Undocumented source files:
+- Undocumented top-level functions:
+- Undocumented class methods:
+- Inventory extractor and confidence disposition:
 - Criteria to mark `current`:
 
 ## Multi-Agent Notes
@@ -222,6 +336,10 @@ See `changes.md`.
 ## Related Flows
 
 - `flow-id`: why it matters
+
+## Related Code Symbols
+
+- `symbol-id`: why it matters
 ```
 
 ## Directory README
@@ -258,6 +376,10 @@ See `changes.md`.
 ## Related Flows
 
 - `flow-id`: why it matters.
+
+## Related Code Symbols
+
+- `symbol-id`: why it matters.
 ```
 
 ## Flow Doc
@@ -273,6 +395,7 @@ user_visible_surface:
 source_of_truth: []
 modules: []
 directories: []
+code_symbols: []
 entrypoints: []
 ---
 
@@ -329,6 +452,8 @@ directories:
   - path/to/directory
 flows:
   - flow-id
+code_symbols:
+  - symbol-id
 decisions:
   - ADR-NNNN
 commits:
@@ -367,6 +492,8 @@ directories:
   - path/to/directory
 flows:
   - flow-id
+code_symbols:
+  - symbol-id
 related_changes:
   - CHG-YYYYMMDD-NNN
 confidence: confirmed | inferred | unknown
@@ -388,3 +515,7 @@ What was chosen.
 - Negative:
 - Follow-up:
 ```
+
+## Code Symbol Docs
+
+Use `references/code-symbol-docs.md` for file, class, function, method, detail, and health templates. Keep code symbol entry docs small: actual role, key signals, and detail index only.

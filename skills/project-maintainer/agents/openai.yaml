@@ -1,4 +1,4 @@
 interface:
   display_name: "Project Maintainer"
-  short_description: "Compact project maps with coverage and flow tracing."
-  default_prompt: "Use $project-maintainer to initialize or update the structured project-maintenance docs for this repository."
+  short_description: "Project maps with git-linked source coverage."
+  default_prompt: "Use $project-maintainer to initialize or update the structured project-maintenance docs for this repository. For a complete deliverable or full repository analysis, run scripts/inventory_symbols.py to generate source-symbol-inventory.json and coverage-map.json, document every stable source file, every top-level function, and every class method with Actual Role plus health, use coverage-map suggested_slices for large projects, and keep pending, stale, heuristic, or requires_review results partial until reviewed."

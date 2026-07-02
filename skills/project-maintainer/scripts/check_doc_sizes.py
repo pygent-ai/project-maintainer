@@ -10,6 +10,15 @@ import sys
 
 DEFAULT_LIMIT_KB = 8
 
+CODE_DETAIL_DOCS = {
+    "actual-behavior.md",
+    "contracts.md",
+    "side-effects.md",
+    "health.md",
+    "risks.md",
+    "tests.md",
+}
+
 
 def limit_for(relative_path: Path) -> int:
     normalized = relative_path.as_posix()
@@ -21,12 +30,24 @@ def limit_for(relative_path: Path) -> int:
         return 8
     if normalized == "manifest.yaml":
         return 20
+    if normalized == "project/source-symbol-inventory.json":
+        return 256
+    if normalized == "project/coverage-map.json":
+        return 256
     if normalized.startswith("project/"):
         return 8
     if normalized.startswith("modules/"):
         return 8
     if normalized.startswith("directories/"):
         return 6
+    if normalized.startswith("code/"):
+        if name in CODE_DETAIL_DOCS:
+            return 6
+        if name.endswith(".md") and relative_path.parent.name and name == f"{relative_path.parent.name}.md":
+            return 6
+        if name.endswith((".md", ".yaml", ".yml")):
+            return 4
+        return 0
     if normalized.startswith("changes/records/"):
         return 6
     if normalized.startswith("changes/by-module/") or normalized.startswith("changes/by-directory/"):
