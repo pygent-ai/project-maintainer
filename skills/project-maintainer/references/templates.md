@@ -31,7 +31,7 @@ Start with `INDEX.md`, then `manifest.yaml`, then the module, directory, code sy
 - Check existing artifact sync status before relying on it.
 - Do not mark the artifact `current` without a recorded coverage closure audit and no actionable pending slices.
 - Do not mark cross-boundary behavior `current` unless required flows are documented or out of scope.
-- Do not mark code symbol coverage `current` unless every stable source file has a symbol inventory and every top-level function and class method has an entry doc with `Actual Role` and health.
+- Do not mark code symbol coverage `current` unless every stable source file has a symbol inventory, every top-level class, top-level function, and class method is audited or out of scope in `symbol-audit-map.json`, and every top-level function and class method has an entry doc with `Actual Role` and health.
 - Mark uncertain claims with `confidence: inferred` or `confidence: unknown`.
 ```
 
@@ -54,7 +54,8 @@ sync:
     untracked_paths: "not_audited" # not_audited | classified | not_applicable
     flow_traces: "not_audited" # not_audited | documented_or_dispositioned
     code_symbols: "not_audited" # not_audited | every_required_symbol_documented
-    notes: "Do not mark current until stable tracked paths and required flows are mapped or out of scope, every top-level function and class method has Actual Role plus health, and no actionable pending slices remain."
+    symbol_audits: "not_audited" # not_audited | every_required_symbol_audited
+    notes: "Do not mark current until stable tracked paths and required flows are mapped or out of scope, every required class, top-level function, and class method is audited or out of scope, every top-level function and class method has Actual Role plus health, and no actionable pending slices remain."
   pending:
     - id: "SYNC-YYYYMMDD-001"
       reason: "Docs may not reflect recent changes."
@@ -76,6 +77,7 @@ project:
     build_plan: "project/build-plan.md"
     source_symbol_inventory: "project/source-symbol-inventory.json"
     coverage_map: "project/coverage-map.json"
+    symbol_audit_map: "project/symbol-audit-map.json"
     open_questions: "project/open-questions.md"
     flows_dir: "project/flows"
     code_dir: "code"
@@ -150,9 +152,28 @@ code_symbols:
       overall: "watch"
       name_behavior_match: "partial"
       responsibility_focus: "mixed"
+      length: "medium"
       complexity: "medium"
+      implementation_soundness: "partial"
+      input_contract: "implicit"
+      output_contract: "clear"
       boundary_safety: "partial"
+      side_effects: "explicit"
+      error_handling: "partial"
+      state_mutation: "shared"
+      dependency_coupling: "medium"
       test_coverage: "partial"
+      observability: "not_applicable"
+      performance_risk: "low"
+    audit:
+      status: "unaudited" # unaudited | agent_audited | human_audited | audit_expired | out_of_scope
+      auditor: null
+      audited_at: null
+      audited_commit: null
+      audited_source_hash: null
+      confidence: "inferred"
+      expired_reason: null
+    issues: []
     coverage:
       status: "partial"
       last_scanned: "YYYY-MM-DD"
@@ -162,6 +183,7 @@ code_symbol_inventory:
   generated_by: "scripts/inventory_symbols.py"
   source_symbol_inventory: "project/source-symbol-inventory.json"
   coverage_map: "project/coverage-map.json"
+  symbol_audit_map: "project/symbol-audit-map.json"
   extractor_priority:
     - "python_ast"
     - "ctags"
@@ -198,6 +220,34 @@ coverage_map:
   pending_review_files: 0
   candidate_project_files: 0
   suggested_slices: []
+
+symbol_audit_map:
+  generated_by: "scripts/inventory_symbols.py"
+  path: "project/symbol-audit-map.json"
+  audit_statuses:
+    unaudited: 0
+    agent_audited: 0
+    human_audited: 0
+    audit_expired: 0
+    out_of_scope: 0
+  health_dimensions:
+    - "overall"
+    - "name_behavior_match"
+    - "responsibility_focus"
+    - "length"
+    - "complexity"
+    - "implementation_soundness"
+    - "input_contract"
+    - "output_contract"
+    - "boundary_safety"
+    - "side_effects"
+    - "state_mutation"
+    - "error_handling"
+    - "dependency_coupling"
+    - "test_coverage"
+    - "observability"
+    - "performance_risk"
+  open_issues: 0
 ```
 
 ## Build Plan
@@ -225,10 +275,14 @@ code_symbol_coverage_status: planned | partial | current
 - Every stable source file inventoried: yes | no
 - Every top-level function documented with `Actual Role` and health: yes | no
 - Every class method documented with `Actual Role` and health: yes | no
+- Every top-level class, top-level function, and class method audited or out of scope: yes | no
 - Inventory command:
 - Inventory extractor summary:
 - Coverage map:
 - Coverage map recommended mode:
+- Symbol audit map:
+- Symbol audit status counts:
+- Open symbol issues:
 - Git head scanned:
 - Dirty worktree state:
 - Stale files:
@@ -261,6 +315,12 @@ Pending flow slices mean flow coverage remains `partial` until the flow is compl
 
 Pending code symbol slices mean code symbol coverage remains `partial` until the slice is completed or explicitly marked out of scope.
 
+## Pending Symbol Audit Slices
+
+- `symbol-id`: `unaudited` or `audit_expired` class, top-level function, or class method; required reviewer type; health dimensions to verify; open issue follow-up
+
+Pending symbol audit slices mean code symbol coverage remains `partial` until each required symbol is `agent_audited`, `human_audited`, or explicitly `out_of_scope`.
+
 ## Suggested Subagent Queue
 
 - `slice-id`: files, symbols, status, assigned agent, blocker, and integration state from `project/coverage-map.json`
@@ -278,9 +338,13 @@ Use this queue when the coverage map recommends `multi-agent`. The coordinator o
 - Generated/local/runtime exclusions:
 - Flow trace disposition:
 - Code symbol disposition:
+- Symbol audit disposition:
 - Undocumented source files:
+- Unaudited or audit-expired top-level classes:
 - Undocumented top-level functions:
 - Undocumented class methods:
+- Unaudited or audit-expired top-level functions:
+- Unaudited or audit-expired class methods:
 - Inventory extractor and confidence disposition:
 - Criteria to mark `current`:
 

@@ -73,6 +73,27 @@ MULTI_AGENT_SYMBOL_THRESHOLD = 80
 MODULE_SYMBOL_THRESHOLD = 40
 MAX_SYMBOLS_PER_SLICE = 60
 
+AUDIT_STATUSES = ("unaudited", "agent_audited", "human_audited", "audit_expired", "out_of_scope")
+AUDITED_STATUSES = {"agent_audited", "human_audited"}
+HEALTH_DIMENSIONS = (
+    "overall",
+    "name_behavior_match",
+    "responsibility_focus",
+    "length",
+    "complexity",
+    "implementation_soundness",
+    "input_contract",
+    "output_contract",
+    "boundary_safety",
+    "side_effects",
+    "state_mutation",
+    "error_handling",
+    "dependency_coupling",
+    "test_coverage",
+    "observability",
+    "performance_risk",
+)
+
 
 def posix(path: Path) -> str:
     return path.as_posix()
@@ -544,6 +565,158 @@ def has_health(text: str) -> bool:
     return bool(re.search(r"(?m)^health:\s*$", text))
 
 
+def scalar_value(value: str) -> Any:
+    value = value.strip()
+    if value in {"", "null", "None", "~"}:
+        return None
+    if value in {"true", "True"}:
+        return True
+    if value in {"false", "False"}:
+        return False
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    return value
+
+
+def split_key_value(text: str) -> tuple[str, Any] | None:
+    if ":" not in text:
+        return None
+    key, value = text.split(":", 1)
+    key = key.strip()
+    if not key:
+        return None
+    return key, scalar_value(value)
+
+
+def extract_frontmatter(text: str) -> list[str]:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return []
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return lines[1:index]
+    return []
+
+
+def parse_indented_mapping(lines: list[str], start: int) -> tuple[dict[str, Any], int]:
+    result: dict[str, Any] = {}
+    index = start
+    while index < len(lines):
+        line = lines[index]
+        if not line.startswith("  ") or line.startswith("    "):
+            break
+        parsed = split_key_value(line.strip())
+        if parsed:
+            key, value = parsed
+            result[key] = value
+        index += 1
+    return result, index
+
+
+def parse_indented_list(lines: list[str], start: int) -> tuple[list[dict[str, Any]], int]:
+    result: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    index = start
+    while index < len(lines):
+        line = lines[index]
+        if not line.startswith("  "):
+            break
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            if current is not None:
+                result.append(current)
+            current = {}
+            parsed = split_key_value(stripped[2:].strip())
+            if parsed:
+                key, value = parsed
+                current[key] = value
+        elif current is not None and line.startswith("    "):
+            parsed = split_key_value(stripped)
+            if parsed:
+                key, value = parsed
+                current[key] = value
+        index += 1
+    if current is not None:
+        result.append(current)
+    return result, index
+
+
+def parse_frontmatter(text: str) -> dict[str, Any]:
+    lines = extract_frontmatter(text)
+    metadata: dict[str, Any] = {}
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip() or line.startswith(" "):
+            index += 1
+            continue
+        parsed = split_key_value(line)
+        if not parsed:
+            index += 1
+            continue
+        key, value = parsed
+        if value is None and index + 1 < len(lines) and lines[index + 1].startswith("  - "):
+            items, index = parse_indented_list(lines, index + 1)
+            metadata[key] = items
+            continue
+        if value is None and index + 1 < len(lines) and lines[index + 1].startswith("  "):
+            mapping, index = parse_indented_mapping(lines, index + 1)
+            metadata[key] = mapping
+            continue
+        metadata[key] = value
+        index += 1
+    return metadata
+
+
+def normalize_health(metadata: dict[str, Any]) -> dict[str, str]:
+    raw = metadata.get("health")
+    health: dict[str, str] = {}
+    raw_mapping = raw if isinstance(raw, dict) else {}
+    for dimension in HEALTH_DIMENSIONS:
+        value = raw_mapping.get(dimension)
+        health[dimension] = str(value) if value not in {None, ""} else "unknown"
+    return health
+
+
+def normalize_issues(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = metadata.get("issues")
+    if not isinstance(raw, list):
+        return []
+    issues: list[dict[str, Any]] = []
+    for index, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            continue
+        issue = {
+            "id": str(item.get("id") or f"ISSUE-{index:03d}"),
+            "dimension": str(item.get("dimension") or "unknown"),
+            "severity": str(item.get("severity") or "unknown"),
+            "status": str(item.get("status") or "open"),
+            "summary": str(item.get("summary") or ""),
+            "evidence": str(item.get("evidence") or ""),
+            "suggested_action": str(item.get("suggested_action") or ""),
+        }
+        issues.append(issue)
+    return issues
+
+
+def normalize_doc_audit(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    raw = metadata.get("audit")
+    if not isinstance(raw, dict):
+        return None
+    status = str(raw.get("status") or "unaudited")
+    if status not in AUDIT_STATUSES:
+        status = "unaudited"
+    return {
+        "status": status,
+        "auditor": raw.get("auditor"),
+        "audited_at": raw.get("audited_at"),
+        "audited_commit": raw.get("audited_commit"),
+        "audited_source_hash": raw.get("audited_source_hash"),
+        "confidence": raw.get("confidence"),
+        "expired_reason": raw.get("expired_reason"),
+    }
+
+
 def verify_docs(root: Path, relative: Path, symbols: list[dict[str, Any]], docs_root: Path) -> dict[str, Any]:
     result: dict[str, Any] = {
         "file_doc": posix(Path("code") / relative / f"{relative.name}.md"),
@@ -556,27 +729,34 @@ def verify_docs(root: Path, relative: Path, symbols: list[dict[str, Any]], docs_
     result["file_doc_exists"] = file_doc_path.exists()
 
     for item in symbols:
-        if item["kind"] not in {"function", "method"}:
-            continue
         docs = expected_doc_paths(relative, item)
         item["docs"] = docs
         entry_path = docs_root / docs["entry_doc"]
         item["doc_exists"] = entry_path.exists()
         item["has_actual_role"] = False
         item["has_health"] = False
+        item["health"] = {dimension: "unknown" for dimension in HEALTH_DIMENSIONS}
+        item["issues"] = []
+        item["audit"] = None
         if not entry_path.exists():
-            result["missing_entry_docs"].append(item["symbol"])
+            if item["kind"] in {"function", "method"}:
+                result["missing_entry_docs"].append(item["symbol"])
             continue
         text, error = read_text(entry_path)
         if error or text is None:
-            result["missing_actual_role"].append(item["symbol"])
-            result["missing_health"].append(item["symbol"])
+            if item["kind"] in {"function", "method"}:
+                result["missing_actual_role"].append(item["symbol"])
+                result["missing_health"].append(item["symbol"])
             continue
+        metadata = parse_frontmatter(text)
+        item["health"] = normalize_health(metadata)
+        item["issues"] = normalize_issues(metadata)
+        item["audit"] = normalize_doc_audit(metadata)
         item["has_actual_role"] = heading_has_content(text, "Actual Role")
         item["has_health"] = has_health(text)
-        if not item["has_actual_role"]:
+        if item["kind"] in {"function", "method"} and not item["has_actual_role"]:
             result["missing_actual_role"].append(item["symbol"])
-        if not item["has_health"]:
+        if item["kind"] in {"function", "method"} and not item["has_health"]:
             result["missing_health"].append(item["symbol"])
     return result
 
@@ -999,11 +1179,240 @@ def build_coverage_map(
     }
 
 
+def symbol_record_id(source_path: str, item: dict[str, Any]) -> str:
+    return f"{source_path}::{item['kind']}::{item['symbol']}"
+
+
+def symbol_signature_hash(item: dict[str, Any]) -> str:
+    signature = str(item.get("signature") or f"{item.get('kind')}|{item.get('class', '')}|{item.get('name')}|{item.get('line')}")
+    return hashlib.sha256(signature.encode("utf-8")).hexdigest()
+
+
+def previous_symbols_by_id(previous_map: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not previous_map:
+        return {}
+    symbols = previous_map.get("symbols")
+    if not isinstance(symbols, list):
+        return {}
+    return {str(item.get("id")): item for item in symbols if isinstance(item, dict) and item.get("id")}
+
+
+def default_audit_record(confidence: str | None = None) -> dict[str, Any]:
+    return {
+        "status": "unaudited",
+        "auditor": None,
+        "audited_at": None,
+        "audited_commit": None,
+        "audited_source_hash": None,
+        "confidence": confidence or "unknown",
+        "expired_reason": None,
+    }
+
+
+def normalized_audit_record(
+    audit: dict[str, Any] | None,
+    *,
+    current_source_hash: str | None,
+    current_commit: str | None,
+    fallback_confidence: str | None,
+) -> dict[str, Any]:
+    if not audit:
+        return default_audit_record(fallback_confidence)
+    status = str(audit.get("status") or "unaudited")
+    if status not in AUDIT_STATUSES:
+        status = "unaudited"
+    audited_source_hash = audit.get("audited_source_hash")
+    if status in AUDITED_STATUSES and not audited_source_hash:
+        audited_source_hash = current_source_hash
+    audited_commit = audit.get("audited_commit")
+    if status in AUDITED_STATUSES and not audited_commit:
+        audited_commit = current_commit
+    return {
+        "status": status,
+        "auditor": audit.get("auditor"),
+        "audited_at": audit.get("audited_at"),
+        "audited_commit": audited_commit,
+        "audited_source_hash": audited_source_hash,
+        "confidence": audit.get("confidence") or fallback_confidence or "unknown",
+        "expired_reason": audit.get("expired_reason"),
+    }
+
+
+def resolved_symbol_audit(
+    item: dict[str, Any],
+    previous_symbol: dict[str, Any] | None,
+    current_source_hash: str | None,
+    current_commit: str | None,
+) -> dict[str, Any]:
+    doc_audit = normalized_audit_record(
+        item.get("audit"),
+        current_source_hash=current_source_hash,
+        current_commit=current_commit,
+        fallback_confidence=item.get("confidence"),
+    )
+    previous_audit = None
+    if previous_symbol and isinstance(previous_symbol.get("audit"), dict):
+        previous_audit = normalized_audit_record(
+            previous_symbol["audit"],
+            current_source_hash=current_source_hash,
+            current_commit=current_commit,
+            fallback_confidence=item.get("confidence"),
+        )
+
+    audit = doc_audit
+    if audit["status"] == "unaudited" and previous_audit:
+        audit = previous_audit
+
+    if audit["status"] in AUDITED_STATUSES:
+        audited_hash = audit.get("audited_source_hash")
+        if audited_hash and current_source_hash and audited_hash != current_source_hash:
+            audit = {
+                **audit,
+                "status": "audit_expired",
+                "expired_reason": "source_hash_changed",
+            }
+    return audit
+
+
+def symbol_doc_status(item: dict[str, Any], verify_docs_enabled: bool) -> dict[str, Any]:
+    docs = item.get("docs") or {}
+    return {
+        "entry_doc": docs.get("entry_doc"),
+        "doc_status": doc_state(item.get("doc_exists"), verify_docs_enabled),
+        "actual_role_status": doc_state(item.get("has_actual_role"), verify_docs_enabled)
+        if item["kind"] in {"function", "method"}
+        else "not_required_for_closure",
+        "health_status": doc_state(item.get("has_health"), verify_docs_enabled)
+        if item["kind"] in {"function", "method"}
+        else "not_required_for_closure",
+    }
+
+
+def symbol_audit_entry(
+    file_item: dict[str, Any],
+    item: dict[str, Any],
+    previous_symbol: dict[str, Any] | None,
+    current_commit: str | None,
+    verify_docs_enabled: bool,
+) -> dict[str, Any]:
+    source_hash = file_item.get("sha256")
+    record_id = symbol_record_id(file_item["path"], item)
+    audit = resolved_symbol_audit(item, previous_symbol, source_hash, current_commit)
+    entry: dict[str, Any] = {
+        "id": record_id,
+        "symbol": item["symbol"],
+        "name": item["name"],
+        "kind": item["kind"],
+        "source": file_item["path"],
+        "class": item.get("class"),
+        "signature": item.get("signature"),
+        "location": {
+            "line": item.get("line"),
+            "end_line": item.get("end_line"),
+        },
+        "source_fingerprint": {
+            "commit": current_commit,
+            "source_hash": source_hash,
+            "signature_hash": symbol_signature_hash(item),
+        },
+        "extractor": item.get("extractor"),
+        "confidence": item.get("confidence"),
+        "audit": audit,
+        "health": item.get("health") or {dimension: "unknown" for dimension in HEALTH_DIMENSIONS},
+        "issues": item.get("issues") or [],
+        "docs": symbol_doc_status(item, verify_docs_enabled),
+    }
+    if entry["class"] is None:
+        entry.pop("class")
+    if entry["signature"] is None:
+        entry.pop("signature")
+    return entry
+
+
+def build_symbol_audit_summary(symbols: list[dict[str, Any]]) -> dict[str, Any]:
+    summary = {
+        "symbols": len(symbols),
+        "classes": 0,
+        "top_level_functions": 0,
+        "class_methods": 0,
+        "unaudited": 0,
+        "agent_audited": 0,
+        "human_audited": 0,
+        "audit_expired": 0,
+        "out_of_scope": 0,
+        "open_issues": 0,
+    }
+    for item in symbols:
+        if item["kind"] == "class":
+            summary["classes"] += 1
+        elif item["kind"] == "function":
+            summary["top_level_functions"] += 1
+        elif item["kind"] == "method":
+            summary["class_methods"] += 1
+        status = item["audit"]["status"]
+        if status in summary:
+            summary[status] += 1
+        summary["open_issues"] += sum(1 for issue in item.get("issues", []) if issue.get("status") != "closed")
+    return summary
+
+
+def build_symbol_audit_map(
+    *,
+    root: Path,
+    inventory: dict[str, Any],
+    inventory_output_path: Path | None,
+    coverage_output_path: Path | None,
+    audit_output_path: Path | None,
+    previous_map: dict[str, Any] | None,
+    verify_docs_enabled: bool,
+) -> dict[str, Any]:
+    current_commit = git_head(root)
+    previous_symbols = previous_symbols_by_id(previous_map)
+    symbols: list[dict[str, Any]] = []
+    for file_item in inventory["files"]:
+        for item in file_item["symbols"]:
+            record_id = symbol_record_id(file_item["path"], item)
+            symbols.append(
+                symbol_audit_entry(
+                    file_item,
+                    item,
+                    previous_symbols.get(record_id),
+                    current_commit,
+                    verify_docs_enabled,
+                )
+            )
+
+    return {
+        "schema": "project-maintainer.symbol-audit-map.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "repo_root": str(root),
+        "git": {
+            "head": current_commit,
+            "status_short": git_status_short(root),
+        },
+        "inventory": {
+            "path": relative_output_path(root, inventory_output_path),
+            "coverage_map": relative_output_path(root, coverage_output_path),
+            "summary": inventory["summary"],
+        },
+        "audit_output": relative_output_path(root, audit_output_path),
+        "audit_statuses": list(AUDIT_STATUSES),
+        "health_dimensions": list(HEALTH_DIMENSIONS),
+        "summary": build_symbol_audit_summary(symbols),
+        "symbols": symbols,
+        "notes": [
+            "This map records audit state, health snapshots, and issues for every discovered class, top-level function, and top-level class method.",
+            "agent_audited and human_audited expire automatically when audited_source_hash differs from the current source hash.",
+        ],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repo_root", type=Path, help="Repository root to inventory")
     parser.add_argument("--output", type=Path, help="Write JSON inventory to this path")
     parser.add_argument("--coverage-map-output", type=Path, help="Write git-linked coverage map JSON to this path")
+    parser.add_argument("--audit-map-output", type=Path, help="Write symbol audit map JSON to this path")
     parser.add_argument(
         "--docs-root",
         type=Path,
@@ -1055,6 +1464,21 @@ def main() -> int:
         coverage_encoded = json.dumps(coverage_map, indent=2 if args.pretty else None, sort_keys=True)
         args.coverage_map_output.parent.mkdir(parents=True, exist_ok=True)
         args.coverage_map_output.write_text(coverage_encoded + "\n", encoding="utf-8")
+
+    if args.audit_map_output:
+        previous_audit_map = load_previous_coverage_map(args.audit_map_output)
+        audit_map = build_symbol_audit_map(
+            root=root,
+            inventory=inventory,
+            inventory_output_path=args.output,
+            coverage_output_path=args.coverage_map_output,
+            audit_output_path=args.audit_map_output,
+            previous_map=previous_audit_map,
+            verify_docs_enabled=args.verify_docs,
+        )
+        audit_encoded = json.dumps(audit_map, indent=2 if args.pretty else None, sort_keys=True)
+        args.audit_map_output.parent.mkdir(parents=True, exist_ok=True)
+        args.audit_map_output.write_text(audit_encoded + "\n", encoding="utf-8")
 
     should_fail = False
     if args.fail_on_review and summary["requires_review_files"]:

@@ -13,7 +13,7 @@ For complete coverage or project-wide `current` status:
 - Every stable source file must have a file-level doc and symbol inventory.
 - Every top-level function must have an entry doc.
 - Every method on every top-level class must have an entry doc.
-- Each function or method entry doc must include `Actual Role`, `Key Signals`, a complete health summary, source metadata, confidence, and manifest linkage.
+- Each function or method entry doc must include `Actual Role`, `Key Signals`, a complete health summary, audit metadata, issue records, source metadata, confidence, and manifest linkage.
 - Do not mark code symbol coverage `current` while any stable source file lacks an inventory, any top-level function lacks an entry doc, any class method lacks an entry doc, or any required entry doc lacks `Actual Role` or health fields.
 
 Stable source files include tracked executable project source such as app code, library code, tests, scripts, CLIs, workers, and tooling source. Exclude generated files, vendored files, build output, disposable local state, and unsupported files only with explicit out-of-scope reasons.
@@ -27,7 +27,7 @@ Use `scripts/inventory_symbols.py` as the single entry point for source symbol d
 Run it before claiming complete code symbol coverage:
 
 ```bash
-python <skill-dir>/scripts/inventory_symbols.py <repo-root> --output <repo-root>/.doc_project_maintainer/project/source-symbol-inventory.json --coverage-map-output <repo-root>/.doc_project_maintainer/project/coverage-map.json --verify-docs
+python <skill-dir>/scripts/inventory_symbols.py <repo-root> --output <repo-root>/.doc_project_maintainer/project/source-symbol-inventory.json --coverage-map-output <repo-root>/.doc_project_maintainer/project/coverage-map.json --audit-map-output <repo-root>/.doc_project_maintainer/project/symbol-audit-map.json --verify-docs
 ```
 
 Extractor behavior:
@@ -36,9 +36,9 @@ Extractor behavior:
 - `ctags`: optional enhanced extractor when `ctags` is available on `PATH`; used automatically for non-Python files.
 - `heuristic`: dependency-free fallback for common source languages; useful for scaffolding but requires manual review before `current`.
 
-The inventory records each file's extractor, confidence, hash, symbols, warnings, and doc verification status. The coverage map records git head, dirty worktree state, untracked candidate source files, stale hashes, per-file status, per-symbol doc status, removed files, and suggested slices. Treat `heuristic`, `unknown`, parser warnings, `requires_review: true`, missing file docs, missing entry docs, missing `Actual Role`, missing health, stale files, removed files, and untracked candidate project files as actionable pending code symbol slices. These states can move work forward but keep coverage `partial`.
+The inventory records each file's extractor, confidence, hash, symbols, warnings, and doc verification status. The coverage map records git head, dirty worktree state, untracked candidate source files, stale hashes, per-file status, per-symbol doc status, removed files, and suggested slices. The symbol audit map records every discovered top-level class, top-level function, and top-level class method with audit state, health snapshot, concrete issues, auditor metadata, and hash-based expiration. Treat `heuristic`, `unknown`, parser warnings, `requires_review: true`, missing file docs, missing entry docs, missing `Actual Role`, missing health, `unaudited`, `audit_expired`, stale files, removed files, and untracked candidate project files as actionable pending code symbol slices. These states can move work forward but keep coverage `partial`.
 
-Use the recorded file hashes in `coverage-map.json` to focus future passes on changed files and newly discovered symbols. For large first scans, assign work from `suggested_slices`; the coordinator must merge outputs, rerun the inventory command, and keep coverage `partial` until no pending, stale, pending_review, or not_checked files remain.
+Use the recorded file hashes in `coverage-map.json` and `symbol-audit-map.json` to focus future passes on changed files and newly discovered symbols. For large first scans, assign work from `suggested_slices`; the coordinator must merge outputs, rerun the inventory command, and keep coverage `partial` until no pending, stale, pending_review, not_checked, unaudited, or audit_expired items remain.
 
 ## Structure
 
@@ -112,6 +112,7 @@ The entry document is a compact symbol card. It must help an agent decide whethe
 Include only:
 
 - YAML frontmatter with stable symbol metadata, summarized health, confidence, and links to detail docs.
+- YAML frontmatter with audit status, auditor metadata, issue records, summarized health, confidence, and links to detail docs.
 - `Actual Role`: one to three sentences describing what the function actually does based on the body.
 - `Key Signals`: compact bullets for input, output, side effects, primary risk, and related tests.
 - `Detail Index`: links to detail docs that exist or are intentionally pending.
@@ -142,6 +143,31 @@ Use these detail docs:
 
 Each detail doc should be narrow. Split again only if it exceeds the size budget.
 
+## Audit Status Fields
+
+Every class, function, and method audit record must use one of:
+
+- `unaudited`: no agent or human has reviewed behavior, health, and issues.
+- `agent_audited`: an agent reviewed behavior, health, and issues and recorded evidence.
+- `human_audited`: a human reviewed or confirmed behavior, health, and issues.
+- `audit_expired`: the source hash changed since the recorded audit.
+- `out_of_scope`: the symbol is intentionally excluded with a reason.
+
+Use this compact audit block in entry docs when a symbol has been reviewed:
+
+```yaml
+audit:
+  status: agent_audited | human_audited | unaudited | audit_expired | out_of_scope
+  auditor: codex | human-name | null
+  audited_at: "YYYY-MM-DDTHH:MM:SSZ"
+  audited_commit: abc1234
+  audited_source_hash: sha256...
+  confidence: confirmed | inferred | unknown
+  expired_reason: null
+```
+
+`scripts/inventory_symbols.py` preserves previous `agent_audited` and `human_audited` states only while `audited_source_hash` matches the current source hash. If the hash differs, the generated audit map marks the symbol `audit_expired`.
+
 ## Health Summary Fields
 
 Every function or method entry doc must include a compact health summary:
@@ -153,6 +179,7 @@ health:
   responsibility_focus: single | mixed | overloaded | unknown
   length: short | medium | long | excessive | unknown
   complexity: low | medium | high | excessive | unknown
+  implementation_soundness: sound | partial | questionable | flawed | unknown
   boundary_safety: safe | partial | risky | unknown
   input_contract: clear | implicit | weak | unknown
   output_contract: clear | implicit | weak | unknown
@@ -182,6 +209,7 @@ Evaluate at least these dimensions:
 - Responsibility focus: whether it does one coherent job or mixes parsing, validation, persistence, IO, rendering, orchestration, and policy.
 - Length: short enough to understand locally, or long enough to hide branches and state.
 - Complexity: branching, nesting, loops, recursion, early returns, exception paths, async paths, or state machines.
+- Implementation soundness: whether the observed implementation is coherent, direct, maintainable, and consistent with intended behavior, or whether it is brittle, redundant, misleading, or likely wrong.
 - Boundary safety: null/none checks, indexes, pagination, path traversal, permissions, numeric ranges, date ranges, concurrency, retry, idempotency, timeouts, resource cleanup, and external contracts.
 - Input and output contracts: whether callers can know valid inputs, outputs, and failure behavior.
 - Side effects: whether mutations and external effects are explicit and isolated.
@@ -192,15 +220,34 @@ Evaluate at least these dimensions:
 - Observability: whether important failures, background work, generated outputs, or operator-visible behavior have logs or status.
 - Performance and resource risk: loops over large data, recursion, repeated IO, unbounded memory, missing pagination, leaked handles, and avoidable recomputation.
 
+## Issue Records
+
+Health dimensions classify risk. `issues[]` records the concrete findings and evidence.
+
+Use this shape:
+
+```yaml
+issues:
+  - id: ISSUE-001
+    dimension: test_coverage
+    severity: low | medium | high | critical | unknown
+    status: open | fixed | accepted | false_positive
+    summary: "Missing direct failure-path tests."
+    evidence: "No direct test found for invalid input behavior."
+    suggested_action: "Add boundary and failure-path tests."
+```
+
+Keep issues evidence-based. Do not create an issue for every non-ideal dimension; create issues only for actionable defects, risks, unclear contracts, missing verification, or accepted risks that future agents should know.
+
 ## Coverage Modes
 
 Use scope-aware coverage:
 
 - During project initialization or exploration, document code symbols by slices. Record every uncovered stable source file, top-level function, and class method in `project/build-plan.md`.
 - During feature, refactor, or bug-fix work, update only touched symbols and directly affected high-risk callers or callees unless the user asks for broader coverage.
-- Run `scripts/inventory_symbols.py` to generate or refresh `project/source-symbol-inventory.json` and `project/coverage-map.json` before claiming complete source symbol coverage.
+- Run `scripts/inventory_symbols.py` to generate or refresh `project/source-symbol-inventory.json`, `project/coverage-map.json`, and `project/symbol-audit-map.json` before claiming complete source symbol coverage.
 - For large projects, keep code symbol coverage `partial` until every stable source file has an inventory and every top-level function and class method has an entry doc with health, or is explicitly out of scope.
-- Do not mark code symbol coverage `current` unless every stable source file, every top-level function, and every class method is documented or explicitly out of scope through a coverage closure audit. Pending symbol slices keep coverage `partial`.
+- Do not mark code symbol coverage `current` unless every stable source file is inventoried, every required top-level class, top-level function, and class method is audited or explicitly out of scope, and every required top-level function and class method is documented through a coverage closure audit. Pending symbol or audit slices keep coverage `partial`.
 
 Prioritize:
 
@@ -228,6 +275,7 @@ health:
   responsibility_focus: mixed
   length: medium
   complexity: medium
+  implementation_soundness: partial
   boundary_safety: partial
   input_contract: implicit
   output_contract: clear
@@ -238,6 +286,22 @@ health:
   test_coverage: partial
   observability: not_applicable
   performance_risk: low
+audit:
+  status: agent_audited
+  auditor: codex
+  audited_at: "YYYY-MM-DDTHH:MM:SSZ"
+  audited_commit: abc1234
+  audited_source_hash: sha256...
+  confidence: inferred
+  expired_reason: null
+issues:
+  - id: ISSUE-001
+    dimension: test_coverage
+    severity: medium
+    status: open
+    summary: "Missing direct failure-path tests."
+    evidence: "No test directly covers invalid input behavior."
+    suggested_action: "Add direct boundary and failure-path tests."
 confidence: inferred
 details:
   actual_behavior: A.a/actual-behavior.md

@@ -26,7 +26,7 @@ skills/
 
 ## Version
 
-Current version: `0.0.3`
+Current version: `0.0.4`
 
 ## What The Skill Does
 
@@ -34,10 +34,11 @@ Current version: `0.0.3`
 - Documents project overview, architecture, module boundaries, and directory responsibilities.
 - Documents cross-boundary causal flows for user-visible, stateful, generated, integration, background, or operator-facing behavior.
 - Documents every stable source file, top-level function, and class method using a source-mirrored `code/` tree with function and method health assessment.
-- Generates source symbol inventories and git-linked coverage maps through a dependency-light script that automatically uses stronger extractors when available and falls back without blocking.
+- Generates source symbol inventories, git-linked coverage maps, and symbol audit maps through a dependency-light script that automatically uses stronger extractors when available and falls back without blocking.
 - Summarizes git history by module, directory, flow, and code symbol when applicable.
 - Records feature, fix, refactor, and design-decision changes.
 - Tracks partial coverage with `project/coverage-map.json` and `project/build-plan.md` for large projects.
+- Tracks class, top-level function, and class method audit state with `project/symbol-audit-map.json`, including agent/human audit state, audit expiration, health snapshots, and issue records.
 - Recommends subagent slices for first scans or stale coverage when the repository exceeds file, symbol, or module-size thresholds.
 - Requires a coverage closure audit before marking project-wide coverage or sync status as current.
 - Requires full repository analysis goals to continue through actionable pending slices instead of ending after a partial map.

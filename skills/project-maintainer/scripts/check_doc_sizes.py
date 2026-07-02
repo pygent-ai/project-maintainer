@@ -34,6 +34,8 @@ def limit_for(relative_path: Path) -> int:
         return 256
     if normalized == "project/coverage-map.json":
         return 256
+    if normalized == "project/symbol-audit-map.json":
+        return 512
     if normalized.startswith("project/"):
         return 8
     if normalized.startswith("modules/"):
