@@ -26,12 +26,14 @@ Start with `INDEX.md`, then `manifest.yaml`, then the module, directory, code sy
 ## Maintenance Rules
 
 - Keep files within the size budgets in `references/artifact-structure.md`.
-- Update module docs, directory docs, flow docs, changes, and decisions after behavior or structure changes.
-- Update code symbol docs and function or method health after source behavior, contracts, side effects, risks, or tests change.
+- Update module docs, directory docs, flow docs, changes, and decisions after project or code behavior, structure, contract, test strategy, health, or knowledge-model changes.
+- Do not create change records for routine artifact-only sync, formatting, generated index refreshes, link maintenance, or documentation updates that merely mirror an already-recorded project or code change.
+- Update code symbol docs and class, function, or method health after source behavior, contracts, side effects, risks, or tests change.
 - Check existing artifact sync status before relying on it.
 - Do not mark the artifact `current` without a recorded coverage closure audit and no actionable pending slices.
 - Do not mark cross-boundary behavior `current` unless required flows are documented or out of scope.
-- Do not mark code symbol coverage `current` unless every stable source file has a symbol inventory, every top-level class, top-level function, and class method is audited or out of scope in `symbol-audit-map.json`, and every top-level function and class method has an entry doc with `Actual Role` and health.
+- Do not mark repository code symbol coverage `current` unless every stable source file has a symbol inventory, every top-level class, top-level function, and class method has a symbol audit map record, and every top-level class, top-level function, and class method has an entry doc with `Actual Role` and health.
+- Do not mark default product/runtime health audit `current` unless every `default_health_audit` top-level class, top-level function, and class method is audited or out of scope in `symbol-audit-map.json`.
 - Mark uncertain claims with `confidence: inferred` or `confidence: unknown`.
 ```
 
@@ -55,7 +57,7 @@ sync:
     flow_traces: "not_audited" # not_audited | documented_or_dispositioned
     code_symbols: "not_audited" # not_audited | every_required_symbol_documented
     symbol_audits: "not_audited" # not_audited | every_required_symbol_audited
-    notes: "Do not mark current until stable tracked paths and required flows are mapped or out of scope, every required class, top-level function, and class method is audited or out of scope, every top-level function and class method has Actual Role plus health, and no actionable pending slices remain."
+    notes: "Do not mark current until stable tracked paths and required flows are mapped or out of scope, every top-level class, top-level function, and class method has Actual Role plus health, every requested-scope health audit symbol is audited or out of scope, and no actionable pending slices remain."
   pending:
     - id: "SYNC-YYYYMMDD-001"
       reason: "Docs may not reflect recent changes."
@@ -103,7 +105,7 @@ modules:
     coverage:
       status: "partial"
       last_scanned: "YYYY-MM-DD"
-      notes: "Entrypoints scanned; related flows still pending."
+      notes: "Entrypoints inspected; related flows still pending."
 
 directories:
   - path: "path/to/directory"
@@ -141,6 +143,8 @@ code_symbols:
   - symbol: "A.a"
     kind: "method"
     source: "src/foo/a.py"
+    source_role: "runtime_source"
+    audit_scope: "default_health_audit"
     doc: "code/src/foo/a.py/Class A/A.a.md"
     detail_dir: "code/src/foo/a.py/Class A/A.a"
     modules:
@@ -198,6 +202,14 @@ code_symbol_inventory:
     documented: 0
     pending: 0
     out_of_scope: 0
+  directory_summary:
+    recorded_directories: 0
+    excluded_directories: 0
+    skipped_non_source_directories: 0
+  source_roles: {}
+  audit_scopes: {}
+  default_health_audit_source_files: 0
+  repository_coverage_only_source_files: 0
   top_level_functions:
     total: 0
     documented: 0
@@ -219,12 +231,27 @@ coverage_map:
   stale_files: 0
   pending_review_files: 0
   candidate_project_files: 0
+  directory_summary:
+    recorded_directories: 0
+    excluded_directories: 0
+    skipped_non_source_directories: 0
+  default_health_audit_required_symbols: 0
+  repository_coverage_only_required_symbols: 0
   suggested_slices: []
+  suggested_audit_slices: []
 
 symbol_audit_map:
   generated_by: "scripts/inventory_symbols.py"
   path: "project/symbol-audit-map.json"
+  source_role_summary: {}
+  audit_scope_summary: {}
   audit_statuses:
+    unaudited: 0
+    agent_audited: 0
+    human_audited: 0
+    audit_expired: 0
+    out_of_scope: 0
+  health_audit_summary:
     unaudited: 0
     agent_audited: 0
     human_audited: 0
@@ -273,6 +300,7 @@ code_symbol_coverage_status: planned | partial | current
 - Known incomplete code symbol slices:
 - Actionable pending slices that keep coverage partial:
 - Every stable source file inventoried: yes | no
+- Every top-level class documented with `Actual Role` and health: yes | no
 - Every top-level function documented with `Actual Role` and health: yes | no
 - Every class method documented with `Actual Role` and health: yes | no
 - Every top-level class, top-level function, and class method audited or out of scope: yes | no
@@ -282,8 +310,10 @@ code_symbol_coverage_status: planned | partial | current
 - Coverage map recommended mode:
 - Symbol audit map:
 - Symbol audit status counts:
+- Default health audit status counts:
+- Directory summary:
 - Open symbol issues:
-- Git head scanned:
+- Git head inventoried:
 - Dirty worktree state:
 - Stale files:
 - Untracked candidate project files:
@@ -311,27 +341,30 @@ Pending flow slices mean flow coverage remains `partial` until the flow is compl
 
 ## Pending Code Symbol Slices
 
-- `source-or-symbol`: missing stable source file inventory, top-level function entry doc, class method entry doc, health, or detail coverage and suggested next step
+- `source-or-symbol`: missing stable source file inventory, top-level class entry doc, top-level function entry doc, class method entry doc, health, or detail coverage and suggested next step
 
 Pending code symbol slices mean code symbol coverage remains `partial` until the slice is completed or explicitly marked out of scope.
 
 ## Pending Symbol Audit Slices
 
-- `symbol-id`: `unaudited` or `audit_expired` class, top-level function, or class method; required reviewer type; health dimensions to verify; open issue follow-up
+- `symbol-id`: `unaudited` or `audit_expired` class, top-level function, or class method in the requested audit scope; required reviewer type; health dimensions to verify; open issue follow-up
 
-Pending symbol audit slices mean code symbol coverage remains `partial` until each required symbol is `agent_audited`, `human_audited`, or explicitly `out_of_scope`.
+Pending symbol audit slices mean requested-scope health audit remains `partial` until each required symbol is `agent_audited`, `human_audited`, or explicitly `out_of_scope`.
 
 ## Suggested Subagent Queue
 
-- `slice-id`: files, symbols, status, assigned agent, blocker, and integration state from `project/coverage-map.json`
+- `slice-id`: files, symbols, status, source roles, audit scopes, assigned agent, blocker, and integration state from `project/coverage-map.json`
 
-Use this queue when the coverage map recommends `multi-agent`. The coordinator owns assignment, merge, manifest/index updates, and rerunning the inventory command after each integrated batch.
+Use `suggested_slices` for repository coverage and `suggested_audit_slices` for default product/runtime health audit when the coverage map recommends `multi-agent`. The coordinator owns assignment, merge, manifest/index updates, and rerunning the inventory command after each integrated batch.
 
 ## Coverage Closure Audit
 
 - Audit source:
 - Tracked path audit:
 - Unmapped stable tracked paths:
+- Recorded source directories:
+- Excluded directories and reasons:
+- Skipped non-source directories:
 - Actionable pending slices:
 - Out-of-scope tracked paths:
 - Untracked path disposition:
@@ -341,10 +374,13 @@ Use this queue when the coverage map recommends `multi-agent`. The coordinator o
 - Symbol audit disposition:
 - Undocumented source files:
 - Unaudited or audit-expired top-level classes:
+- Unaudited or audit-expired top-level classes in requested audit scope:
 - Undocumented top-level functions:
 - Undocumented class methods:
 - Unaudited or audit-expired top-level functions:
+- Unaudited or audit-expired top-level functions in requested audit scope:
 - Unaudited or audit-expired class methods:
+- Unaudited or audit-expired class methods in requested audit scope:
 - Inventory extractor and confidence disposition:
 - Criteria to mark `current`:
 
@@ -508,7 +544,7 @@ Open questions and uncertain links.
 ---
 id: CHG-YYYYMMDD-NNN
 title: Short semantic title
-type: feature | fix | refactor | docs | test | chore
+type: feature | fix | refactor | docs | test | chore # docs/chore must still describe a meaningful project, code, test, or knowledge-model change.
 date: YYYY-MM-DD
 modules:
   - module-id
@@ -529,7 +565,7 @@ confidence: confirmed | inferred | unknown
 
 ## What Changed
 
-Brief behavior or structure change.
+Brief project or code semantic change. Do not describe routine artifact sync unless the artifact update changed the project knowledge model, such as module boundaries, flow traces, coverage status, symbol audit disposition, out-of-scope decisions, or corrected architectural understanding.
 
 ## Why
 

@@ -75,6 +75,7 @@ MAX_SYMBOLS_PER_SLICE = 60
 
 AUDIT_STATUSES = ("unaudited", "agent_audited", "human_audited", "audit_expired", "out_of_scope")
 AUDITED_STATUSES = {"agent_audited", "human_audited"}
+REQUIRED_ENTRY_DOC_KINDS = {"class", "function", "method"}
 HEALTH_DIMENSIONS = (
     "overall",
     "name_behavior_match",
@@ -93,6 +94,75 @@ HEALTH_DIMENSIONS = (
     "observability",
     "performance_risk",
 )
+
+DEFAULT_HEALTH_AUDIT_SCOPE = "default_health_audit"
+REPOSITORY_COVERAGE_ONLY_SCOPE = "repository_coverage_only"
+DEFAULT_HEALTH_AUDIT_ROLES = {"runtime_source", "library_source"}
+
+FIXTURE_PARTS = {
+    "__fixtures__",
+    "__mocks__",
+    "__snapshots__",
+    "fixture",
+    "fixtures",
+    "mock",
+    "mocks",
+    "snapshot",
+    "snapshots",
+    "test_data",
+    "testdata",
+}
+TEST_PARTS = {"__tests__", "spec", "specs", "test", "tests"}
+TEST_NAME_MARKERS = (
+    ".spec.",
+    ".test.",
+    "_spec.",
+    "_test.",
+)
+SCRIPT_PARTS = {"bin", "script", "scripts"}
+TOOLING_PARTS = {
+    ".github",
+    "ci",
+    "config",
+    "configs",
+    "devtools",
+    "tool",
+    "tooling",
+    "tools",
+}
+DOC_PARTS = {"doc", "docs", "documentation", "example", "examples"}
+RUNTIME_PARTS = {
+    "api",
+    "apis",
+    "app",
+    "apps",
+    "backend",
+    "client",
+    "clients",
+    "cmd",
+    "commands",
+    "daemon",
+    "daemons",
+    "frontend",
+    "handler",
+    "handlers",
+    "route",
+    "routes",
+    "server",
+    "servers",
+    "service",
+    "services",
+    "web",
+    "worker",
+    "workers",
+}
+LIBRARY_PARTS = {"core", "internal", "lib", "libs", "libraries", "library", "package", "packages", "pkg", "src"}
+PACKAGE_METADATA_NAMES = {
+    "__about__.py",
+    "__version__.py",
+    "package.py",
+    "setup.py",
+}
 
 
 def posix(path: Path) -> str:
@@ -208,7 +278,58 @@ def language_for(path: Path) -> str | None:
     return SOURCE_EXTENSIONS.get(path.suffix.lower())
 
 
-def stable_source_files(root: Path) -> tuple[list[Path], str]:
+def directory_key(relative: Path) -> str:
+    parent = relative.parent.as_posix()
+    return "(root)" if parent == "." else parent
+
+
+def increment_count(mapping: dict[str, int], key: str) -> None:
+    mapping[key] = mapping.get(key, 0) + 1
+
+
+def directory_summary_entry(entries: dict[str, dict[str, Any]], directory: str) -> dict[str, Any]:
+    if directory not in entries:
+        entries[directory] = {"directory": directory, "files": 0, "reasons": {}}
+    return entries[directory]
+
+
+def source_role_for(relative: Path) -> str:
+    parts = [part.lower() for part in relative.parts]
+    part_set = set(parts)
+    name = relative.name.lower()
+
+    if any(pattern in name for pattern in GENERATED_NAME_PATTERNS):
+        return "generated"
+    if name in PACKAGE_METADATA_NAMES:
+        return "package_metadata"
+    if part_set.intersection(FIXTURE_PARTS):
+        return "fixture"
+    if (
+        part_set.intersection(TEST_PARTS)
+        or name.startswith("test_")
+        or any(marker in name for marker in TEST_NAME_MARKERS)
+    ):
+        return "test_source"
+    if part_set.intersection(DOC_PARTS):
+        return "docs"
+    if part_set.intersection(SCRIPT_PARTS):
+        return "script"
+    if part_set.intersection(TOOLING_PARTS):
+        return "tooling"
+    if part_set.intersection(RUNTIME_PARTS):
+        return "runtime_source"
+    if part_set.intersection(LIBRARY_PARTS):
+        return "library_source"
+    return "library_source"
+
+
+def audit_scope_for_role(source_role: str) -> str:
+    if source_role in DEFAULT_HEALTH_AUDIT_ROLES:
+        return DEFAULT_HEALTH_AUDIT_SCOPE
+    return REPOSITORY_COVERAGE_ONLY_SCOPE
+
+
+def stable_source_files(root: Path) -> tuple[list[Path], str, dict[str, Any]]:
     files = git_ls_files(root)
     source = "git ls-files"
     if files is None:
@@ -216,17 +337,66 @@ def stable_source_files(root: Path) -> tuple[list[Path], str]:
         files = [path for path in root.rglob("*") if path.is_file()]
 
     selected: list[Path] = []
+    recorded: dict[str, dict[str, Any]] = {}
+    excluded: dict[str, dict[str, Any]] = {}
+    skipped_non_source: dict[str, dict[str, Any]] = {}
     for path in files:
         try:
             relative = path.relative_to(root)
         except ValueError:
             continue
-        excluded, _reason = is_generated_or_excluded(relative)
-        if excluded:
+        directory = directory_key(relative)
+        is_excluded, reason = is_generated_or_excluded(relative)
+        if is_excluded:
+            entry = directory_summary_entry(excluded, directory)
+            entry["files"] += 1
+            increment_count(entry["reasons"], reason or "excluded")
             continue
-        if language_for(path):
-            selected.append(path)
-    return sorted(selected), source
+        language = language_for(path)
+        if not language:
+            entry = directory_summary_entry(skipped_non_source, directory)
+            entry["files"] += 1
+            increment_count(entry["reasons"], "unsupported source extension")
+            continue
+
+        selected.append(path)
+        source_role = source_role_for(relative)
+        audit_scope = audit_scope_for_role(source_role)
+        if directory not in recorded:
+            recorded[directory] = {
+                "directory": directory,
+                "source_files": 0,
+                "source_roles": {},
+                "audit_scopes": {},
+            }
+        recorded_entry = recorded[directory]
+        recorded_entry["source_files"] += 1
+        increment_count(recorded_entry["source_roles"], source_role)
+        increment_count(recorded_entry["audit_scopes"], audit_scope)
+
+    directory_summary = {
+        "listing_source": source,
+        "totals": {
+            "recorded_directories": len(recorded),
+            "excluded_directories": len(excluded),
+            "skipped_non_source_directories": len(skipped_non_source),
+            "recorded_source_files": len(selected),
+            "excluded_files": sum(item["files"] for item in excluded.values()),
+            "skipped_non_source_files": sum(item["files"] for item in skipped_non_source.values()),
+        },
+        "recorded_directories": sorted(recorded.values(), key=lambda item: item["directory"]),
+        "excluded_directories": sorted(excluded.values(), key=lambda item: item["directory"]),
+        "skipped_non_source_directories": sorted(
+            skipped_non_source.values(),
+            key=lambda item: item["directory"],
+        ),
+        "notes": [
+            "recorded_directories are stable source directories included in source-symbol-inventory.json.",
+            "excluded_directories are omitted before language extraction because they match generated, vendored, build, dependency, or local-state exclusion rules.",
+            "skipped_non_source_directories contain tracked files that did not match supported source extensions.",
+        ],
+    }
+    return sorted(selected), source, directory_summary
 
 
 def symbol(
@@ -739,12 +909,12 @@ def verify_docs(root: Path, relative: Path, symbols: list[dict[str, Any]], docs_
         item["issues"] = []
         item["audit"] = None
         if not entry_path.exists():
-            if item["kind"] in {"function", "method"}:
+            if item["kind"] in REQUIRED_ENTRY_DOC_KINDS:
                 result["missing_entry_docs"].append(item["symbol"])
             continue
         text, error = read_text(entry_path)
         if error or text is None:
-            if item["kind"] in {"function", "method"}:
+            if item["kind"] in REQUIRED_ENTRY_DOC_KINDS:
                 result["missing_actual_role"].append(item["symbol"])
                 result["missing_health"].append(item["symbol"])
             continue
@@ -754,9 +924,9 @@ def verify_docs(root: Path, relative: Path, symbols: list[dict[str, Any]], docs_
         item["audit"] = normalize_doc_audit(metadata)
         item["has_actual_role"] = heading_has_content(text, "Actual Role")
         item["has_health"] = has_health(text)
-        if item["kind"] in {"function", "method"} and not item["has_actual_role"]:
+        if item["kind"] in REQUIRED_ENTRY_DOC_KINDS and not item["has_actual_role"]:
             result["missing_actual_role"].append(item["symbol"])
-        if item["kind"] in {"function", "method"} and not item["has_health"]:
+        if item["kind"] in REQUIRED_ENTRY_DOC_KINDS and not item["has_health"]:
             result["missing_health"].append(item["symbol"])
     return result
 
@@ -764,6 +934,8 @@ def verify_docs(root: Path, relative: Path, symbols: list[dict[str, Any]], docs_
 def inventory_file(path: Path, root: Path, docs_root: Path | None, verify: bool) -> dict[str, Any]:
     relative = path.relative_to(root)
     language = language_for(path)
+    source_role = source_role_for(relative)
+    audit_scope = audit_scope_for_role(source_role)
     text, read_warning = read_text(path)
     warnings: list[str] = []
     if read_warning:
@@ -772,6 +944,8 @@ def inventory_file(path: Path, root: Path, docs_root: Path | None, verify: bool)
         return {
             "path": posix(relative),
             "language": language,
+            "source_role": source_role,
+            "audit_scope": audit_scope,
             "sha256": None,
             "extractor": "none",
             "confidence": "unknown",
@@ -814,6 +988,8 @@ def inventory_file(path: Path, root: Path, docs_root: Path | None, verify: bool)
     result: dict[str, Any] = {
         "path": posix(relative),
         "language": language,
+        "source_role": source_role,
+        "audit_scope": audit_scope,
         "sha256": file_hash(path),
         "extractor": extractor,
         "confidence": confidence,
@@ -835,6 +1011,12 @@ def build_summary(files: list[dict[str, Any]], verify_docs_enabled: bool) -> dic
         "class_methods": 0,
         "requires_review_files": 0,
         "extractors": {},
+        "source_roles": {},
+        "audit_scopes": {},
+        "default_health_audit_source_files": 0,
+        "repository_coverage_only_source_files": 0,
+        "default_health_audit_symbols": 0,
+        "repository_coverage_only_symbols": 0,
         "missing_file_docs": 0,
         "missing_entry_docs": 0,
         "missing_actual_role": 0,
@@ -842,6 +1024,16 @@ def build_summary(files: list[dict[str, Any]], verify_docs_enabled: bool) -> dic
     }
     for file_item in files:
         summary["extractors"][file_item["extractor"]] = summary["extractors"].get(file_item["extractor"], 0) + 1
+        source_role = file_item.get("source_role") or "unknown"
+        audit_scope = file_item.get("audit_scope") or REPOSITORY_COVERAGE_ONLY_SCOPE
+        summary["source_roles"][source_role] = summary["source_roles"].get(source_role, 0) + 1
+        summary["audit_scopes"][audit_scope] = summary["audit_scopes"].get(audit_scope, 0) + 1
+        if audit_scope == DEFAULT_HEALTH_AUDIT_SCOPE:
+            summary["default_health_audit_source_files"] += 1
+            summary["default_health_audit_symbols"] += len(file_item["symbols"])
+        else:
+            summary["repository_coverage_only_source_files"] += 1
+            summary["repository_coverage_only_symbols"] += len(file_item["symbols"])
         if file_item["requires_review"]:
             summary["requires_review_files"] += 1
         for item in file_item["symbols"]:
@@ -894,19 +1086,26 @@ def doc_state(value: bool | None, verify_docs_enabled: bool) -> str:
     return "present" if value else "missing"
 
 
-def symbol_coverage_state(item: dict[str, Any], verify_docs_enabled: bool) -> dict[str, Any]:
+def symbol_coverage_state(
+    item: dict[str, Any],
+    verify_docs_enabled: bool,
+    source_role: str,
+    audit_scope: str,
+) -> dict[str, Any]:
     state: dict[str, Any] = {
         "symbol": item["symbol"],
         "name": item["name"],
         "kind": item["kind"],
         "line": item.get("line"),
+        "source_role": source_role,
+        "audit_scope": audit_scope,
         "confidence": item.get("confidence"),
         "extractor": item.get("extractor"),
     }
     if item.get("class"):
         state["class"] = item["class"]
 
-    if item["kind"] not in {"function", "method"}:
+    if item["kind"] not in REQUIRED_ENTRY_DOC_KINDS:
         state["doc_status"] = "not_required_for_closure"
         state["actual_role_status"] = "not_required_for_closure"
         state["health_status"] = "not_required_for_closure"
@@ -922,7 +1121,7 @@ def symbol_coverage_state(item: dict[str, Any], verify_docs_enabled: bool) -> di
 
 
 def required_symbol_is_documented(symbol_state: dict[str, Any]) -> bool:
-    if symbol_state["kind"] not in {"function", "method"}:
+    if symbol_state["kind"] not in REQUIRED_ENTRY_DOC_KINDS:
         return True
     return (
         symbol_state["doc_status"] == "present"
@@ -953,7 +1152,7 @@ def file_coverage_status(
 
 
 def actionable_symbol_count(file_entry: dict[str, Any]) -> int:
-    symbols = [item for item in file_entry["symbols"] if item["kind"] in {"function", "method"}]
+    symbols = [item for item in file_entry["symbols"] if item["kind"] in REQUIRED_ENTRY_DOC_KINDS]
     if file_entry["status"] in {"stale", "pending_review", "not_checked"}:
         return len(symbols)
     return sum(1 for item in symbols if not required_symbol_is_documented(item))
@@ -977,8 +1176,15 @@ def count_status(files: list[dict[str, Any]], status: str) -> int:
     return sum(1 for item in files if item["status"] == status)
 
 
-def build_suggested_slices(files: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+def build_suggested_slices(
+    files: list[dict[str, Any]],
+    *,
+    scope: str,
+    audit_scope_filter: str | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     actionable = [item for item in files if item["status"] != "documented"]
+    if audit_scope_filter is not None:
+        actionable = [item for item in actionable if item.get("audit_scope") == audit_scope_filter]
     groups: dict[str, list[dict[str, Any]]] = {}
     for file_entry in actionable:
         groups.setdefault(module_key(file_entry["path"]), []).append(file_entry)
@@ -993,7 +1199,7 @@ def build_suggested_slices(files: list[dict[str, Any]]) -> tuple[list[dict[str, 
             symbol_count = len(file_entry["symbols"])
             if chunk and chunk_symbols + symbol_count > MAX_SYMBOLS_PER_SLICE:
                 slice_id = f"{slice_slug(group_name)}-{index:03d}"
-                suggested.append(slice_entry(slice_id, group_name, chunk))
+                suggested.append(slice_entry(slice_id, group_name, chunk, scope))
                 for item in chunk:
                     assigned[item["path"]] = slice_id
                 index += 1
@@ -1003,24 +1209,34 @@ def build_suggested_slices(files: list[dict[str, Any]]) -> tuple[list[dict[str, 
             chunk_symbols += symbol_count
         if chunk:
             slice_id = f"{slice_slug(group_name)}-{index:03d}"
-            suggested.append(slice_entry(slice_id, group_name, chunk))
+            suggested.append(slice_entry(slice_id, group_name, chunk, scope))
             for item in chunk:
                 assigned[item["path"]] = slice_id
     return suggested, assigned
 
 
-def slice_entry(slice_id: str, group_name: str, files: list[dict[str, Any]]) -> dict[str, Any]:
+def slice_entry(slice_id: str, group_name: str, files: list[dict[str, Any]], scope: str) -> dict[str, Any]:
     statuses = sorted({item["status"] for item in files})
+    source_roles = sorted({str(item.get("source_role") or "unknown") for item in files})
+    audit_scopes = sorted({str(item.get("audit_scope") or REPOSITORY_COVERAGE_ONLY_SCOPE) for item in files})
+    reason = (
+        "Audit or review default runtime/library health targets before default product health audit can be current."
+        if scope == DEFAULT_HEALTH_AUDIT_SCOPE
+        else "Complete or review files before project-wide repository coverage can be current."
+    )
     return {
         "id": slice_id,
         "kind": "module" if group_name != "(root)" else "root",
         "module": group_name,
+        "scope": scope,
+        "source_roles": source_roles,
+        "audit_scopes": audit_scopes,
         "files": [item["path"] for item in files],
         "source_files": len(files),
         "symbols": sum(len(item["symbols"]) for item in files),
         "pending_symbols": sum(actionable_symbol_count(item) for item in files),
         "statuses": statuses,
-        "reason": "Complete or review files before project-wide coverage can be current.",
+        "reason": reason,
     }
 
 
@@ -1033,11 +1249,18 @@ def build_coverage_files(
     coverage_files: list[dict[str, Any]] = []
     for file_item in inventory_files:
         previous_item = previous_by_path.get(file_item["path"])
-        symbols = [symbol_coverage_state(item, verify_docs_enabled) for item in file_item["symbols"]]
+        source_role = file_item.get("source_role") or "unknown"
+        audit_scope = file_item.get("audit_scope") or audit_scope_for_role(source_role)
+        symbols = [
+            symbol_coverage_state(item, verify_docs_enabled, source_role, audit_scope)
+            for item in file_item["symbols"]
+        ]
         verification = file_item.get("doc_verification", {})
         file_entry: dict[str, Any] = {
             "path": file_item["path"],
             "language": file_item["language"],
+            "source_role": source_role,
+            "audit_scope": audit_scope,
             "source_hash": file_item.get("sha256"),
             "previous_hash": previous_item.get("source_hash") if previous_item else None,
             "last_scanned_commit": current_head,
@@ -1090,9 +1313,34 @@ def build_coverage_summary(
         symbol
         for file_entry in files
         for symbol in file_entry["symbols"]
-        if symbol["kind"] in {"function", "method"}
+        if symbol["kind"] in REQUIRED_ENTRY_DOC_KINDS
     ]
+    default_health_audit_symbols = [
+        symbol
+        for file_entry in files
+        if file_entry.get("audit_scope") == DEFAULT_HEALTH_AUDIT_SCOPE
+        for symbol in file_entry["symbols"]
+        if symbol["kind"] in REQUIRED_ENTRY_DOC_KINDS
+    ]
+    repository_only_symbols = [
+        symbol
+        for file_entry in files
+        if file_entry.get("audit_scope") != DEFAULT_HEALTH_AUDIT_SCOPE
+        for symbol in file_entry["symbols"]
+        if symbol["kind"] in REQUIRED_ENTRY_DOC_KINDS
+    ]
+    source_roles: dict[str, int] = {}
+    audit_scopes: dict[str, int] = {}
+    for file_entry in files:
+        source_role = str(file_entry.get("source_role") or "unknown")
+        audit_scope = str(file_entry.get("audit_scope") or REPOSITORY_COVERAGE_ONLY_SCOPE)
+        source_roles[source_role] = source_roles.get(source_role, 0) + 1
+        audit_scopes[audit_scope] = audit_scopes.get(audit_scope, 0) + 1
     documented_required_symbols = sum(1 for symbol in required_symbols if required_symbol_is_documented(symbol))
+    documented_default_health_audit_symbols = sum(
+        1 for symbol in default_health_audit_symbols if required_symbol_is_documented(symbol)
+    )
+    documented_repository_only_symbols = sum(1 for symbol in repository_only_symbols if required_symbol_is_documented(symbol))
     return {
         "source_files": len(files),
         "documented_files": count_status(files, "documented"),
@@ -1102,9 +1350,19 @@ def build_coverage_summary(
         "not_checked_files": count_status(files, "not_checked"),
         "removed_files": len(removed_files),
         "untracked_candidate_source_files": len(untracked_candidates),
+        "source_roles": source_roles,
+        "audit_scopes": audit_scopes,
         "required_symbols": len(required_symbols),
         "documented_required_symbols": documented_required_symbols,
         "pending_required_symbols": len(required_symbols) - documented_required_symbols,
+        "default_health_audit_required_symbols": len(default_health_audit_symbols),
+        "documented_default_health_audit_required_symbols": documented_default_health_audit_symbols,
+        "pending_default_health_audit_required_symbols": len(default_health_audit_symbols)
+        - documented_default_health_audit_symbols,
+        "repository_coverage_only_required_symbols": len(repository_only_symbols),
+        "documented_repository_coverage_only_required_symbols": documented_repository_only_symbols,
+        "pending_repository_coverage_only_required_symbols": len(repository_only_symbols)
+        - documented_repository_only_symbols,
     }
 
 
@@ -1127,9 +1385,15 @@ def build_coverage_map(
         current_head,
         verify_docs_enabled,
     )
-    suggested_slices, assigned = build_suggested_slices(coverage_files)
+    suggested_slices, assigned = build_suggested_slices(coverage_files, scope="repository_coverage")
+    suggested_audit_slices, audit_assigned = build_suggested_slices(
+        coverage_files,
+        scope=DEFAULT_HEALTH_AUDIT_SCOPE,
+        audit_scope_filter=DEFAULT_HEALTH_AUDIT_SCOPE,
+    )
     for file_entry in coverage_files:
         file_entry["assigned_slice"] = assigned.get(file_entry["path"])
+        file_entry["assigned_audit_slice"] = audit_assigned.get(file_entry["path"])
 
     current_paths = {item["path"] for item in coverage_files}
     removed_files = removed_coverage_files(previous_by_path, current_paths, current_head)
@@ -1160,6 +1424,7 @@ def build_coverage_map(
             "listing_source": inventory["listing_source"],
             "summary": inventory["summary"],
         },
+        "directory_summary": inventory.get("directory_summary"),
         "thresholds": {
             "multi_agent_source_files": MULTI_AGENT_SOURCE_FILE_THRESHOLD,
             "multi_agent_symbols": MULTI_AGENT_SYMBOL_THRESHOLD,
@@ -1169,11 +1434,13 @@ def build_coverage_map(
         "recommended_mode": recommended_mode,
         "summary": build_coverage_summary(coverage_files, removed_files, untracked_candidates),
         "suggested_slices": suggested_slices,
+        "suggested_audit_slices": suggested_audit_slices,
         "files": coverage_files,
         "removed_files": removed_files,
         "notes": [
-            "Use documented only when the file hash is current, extractor confidence is sufficient, and required function/method docs include Actual Role plus health.",
-            "Use suggested_slices as the coordinator queue for subagents; integrate outputs centrally before marking coverage current.",
+            "Use suggested_slices for full repository coverage, including tests, scripts, tooling, fixtures, and package metadata.",
+            "Use suggested_audit_slices for the default product/runtime health audit queue; tests remain verification evidence unless explicitly requested as audit targets.",
+            "Use documented only when the file hash is current, extractor confidence is sufficient, and required class, function, and method docs include Actual Role plus health.",
         ],
         "coverage_output": relative_output_path(root, coverage_output_path),
     }
@@ -1280,10 +1547,10 @@ def symbol_doc_status(item: dict[str, Any], verify_docs_enabled: bool) -> dict[s
         "entry_doc": docs.get("entry_doc"),
         "doc_status": doc_state(item.get("doc_exists"), verify_docs_enabled),
         "actual_role_status": doc_state(item.get("has_actual_role"), verify_docs_enabled)
-        if item["kind"] in {"function", "method"}
+        if item["kind"] in REQUIRED_ENTRY_DOC_KINDS
         else "not_required_for_closure",
         "health_status": doc_state(item.get("has_health"), verify_docs_enabled)
-        if item["kind"] in {"function", "method"}
+        if item["kind"] in REQUIRED_ENTRY_DOC_KINDS
         else "not_required_for_closure",
     }
 
@@ -1304,6 +1571,8 @@ def symbol_audit_entry(
         "name": item["name"],
         "kind": item["kind"],
         "source": file_item["path"],
+        "source_role": file_item.get("source_role") or "unknown",
+        "audit_scope": file_item.get("audit_scope") or REPOSITORY_COVERAGE_ONLY_SCOPE,
         "class": item.get("class"),
         "signature": item.get("signature"),
         "location": {
@@ -1356,6 +1625,14 @@ def build_symbol_audit_summary(symbols: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
+def count_symbols_by_field(symbols: list[dict[str, Any]], field: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in symbols:
+        value = str(item.get(field) or "unknown")
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
 def build_symbol_audit_map(
     *,
     root: Path,
@@ -1381,6 +1658,7 @@ def build_symbol_audit_map(
                     verify_docs_enabled,
                 )
             )
+    health_audit_symbols = [item for item in symbols if item.get("audit_scope") == DEFAULT_HEALTH_AUDIT_SCOPE]
 
     return {
         "schema": "project-maintainer.symbol-audit-map.v1",
@@ -1398,10 +1676,15 @@ def build_symbol_audit_map(
         "audit_output": relative_output_path(root, audit_output_path),
         "audit_statuses": list(AUDIT_STATUSES),
         "health_dimensions": list(HEALTH_DIMENSIONS),
+        "source_role_summary": count_symbols_by_field(symbols, "source_role"),
+        "audit_scope_summary": count_symbols_by_field(symbols, "audit_scope"),
         "summary": build_symbol_audit_summary(symbols),
+        "health_audit_summary": build_symbol_audit_summary(health_audit_symbols),
         "symbols": symbols,
+        "health_audit_symbols": health_audit_symbols,
         "notes": [
-            "This map records audit state, health snapshots, and issues for every discovered class, top-level function, and top-level class method.",
+            "This map records repository-wide audit state, health snapshots, and issues for every discovered class, top-level function, and top-level class method.",
+            "Use health_audit_summary and health_audit_symbols for the default product/runtime health audit; repository-only roles remain coverage and verification evidence unless explicitly requested.",
             "agent_audited and human_audited expire automatically when audited_source_hash differs from the current source hash.",
         ],
     }
@@ -1426,7 +1709,7 @@ def main() -> int:
 
     root = args.repo_root.resolve()
     docs_root = (args.docs_root or (root / ".doc_project_maintainer")).resolve()
-    source_files, listing_source = stable_source_files(root)
+    source_files, listing_source, directory_summary = stable_source_files(root)
     files = [inventory_file(path, root, docs_root, args.verify_docs) for path in source_files]
     summary = build_summary(files, args.verify_docs)
     inventory = {
@@ -1441,6 +1724,7 @@ def main() -> int:
             "heuristic": True,
         },
         "summary": summary,
+        "directory_summary": directory_summary,
         "files": files,
     }
 

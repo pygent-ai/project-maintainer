@@ -1,6 +1,6 @@
 # Code Symbol Documentation
 
-Use code symbol docs when a task requires source-level understanding, function or method health review, or post-change artifact sync for touched code.
+Use code symbol docs when a task requires source-level understanding, class, function, or method health review, or post-change artifact sync for touched code.
 
 Code symbol docs are the executable-detail view of the project. They mirror source paths and symbol ownership so the artifact tree itself explains where a file, class, function, or method lives. File and directory names are documentation signals. Do not hide primary symbol identity behind generic `README.md` files.
 
@@ -11,12 +11,15 @@ A complete project-maintainer deliverable must let a future developer query any 
 For complete coverage or project-wide `current` status:
 
 - Every stable source file must have a file-level doc and symbol inventory.
+- Every top-level class must have an entry doc.
 - Every top-level function must have an entry doc.
 - Every method on every top-level class must have an entry doc.
-- Each function or method entry doc must include `Actual Role`, `Key Signals`, a complete health summary, audit metadata, issue records, source metadata, confidence, and manifest linkage.
-- Do not mark code symbol coverage `current` while any stable source file lacks an inventory, any top-level function lacks an entry doc, any class method lacks an entry doc, or any required entry doc lacks `Actual Role` or health fields.
+- Each class, function, or method entry doc must include `Actual Role`, `Key Signals`, a complete health summary, audit metadata, issue records, source metadata, confidence, and manifest linkage.
+- Do not mark code symbol coverage `current` while any stable source file lacks an inventory, any top-level class lacks an entry doc, any top-level function lacks an entry doc, any class method lacks an entry doc, or any required entry doc lacks `Actual Role` or health fields.
 
 Stable source files include tracked executable project source such as app code, library code, tests, scripts, CLIs, workers, and tooling source. Exclude generated files, vendored files, build output, disposable local state, and unsupported files only with explicit out-of-scope reasons.
+
+Keep repository coverage separate from product/runtime health audit. Every inventoried file must have a `source_role` and `audit_scope`. Default health audit includes only `runtime_source` and `library_source`; tests, fixtures, scripts, tooling, docs-adjacent source, and package metadata remain repository coverage and verification evidence unless the user explicitly requests that audit scope.
 
 Top-level means declared at file or module scope. Document methods on top-level classes, including constructors, lifecycle methods, magic or dunder methods, static methods, class methods, and private methods. Nested functions, local classes, anonymous callbacks, generated declarations, overload-only signatures, and type-only declarations do not need separate entry docs unless they are independently callable, exported, risky, or needed for a documented flow.
 
@@ -36,9 +39,9 @@ Extractor behavior:
 - `ctags`: optional enhanced extractor when `ctags` is available on `PATH`; used automatically for non-Python files.
 - `heuristic`: dependency-free fallback for common source languages; useful for scaffolding but requires manual review before `current`.
 
-The inventory records each file's extractor, confidence, hash, symbols, warnings, and doc verification status. The coverage map records git head, dirty worktree state, untracked candidate source files, stale hashes, per-file status, per-symbol doc status, removed files, and suggested slices. The symbol audit map records every discovered top-level class, top-level function, and top-level class method with audit state, health snapshot, concrete issues, auditor metadata, and hash-based expiration. Treat `heuristic`, `unknown`, parser warnings, `requires_review: true`, missing file docs, missing entry docs, missing `Actual Role`, missing health, `unaudited`, `audit_expired`, stale files, removed files, and untracked candidate project files as actionable pending code symbol slices. These states can move work forward but keep coverage `partial`.
+The inventory records each file's extractor, confidence, hash, symbols, warnings, doc verification status, `source_role`, `audit_scope`, and `directory_summary`. The coverage map records git head, dirty worktree state, untracked candidate source files, stale hashes, per-file status, per-symbol doc status, removed files, `directory_summary`, repository coverage `suggested_slices`, and default product/runtime health `suggested_audit_slices`. `directory_summary` lists recorded source directories, excluded directories with rule reasons, and skipped non-source directories so agents can review what the script actually considered. The symbol audit map records every discovered top-level class, top-level function, and top-level class method with audit state, health snapshot, concrete issues, auditor metadata, hash-based expiration, and scope fields. Treat `heuristic`, `unknown`, parser warnings, `requires_review: true`, missing file docs, missing entry docs, missing `Actual Role`, missing health, `unaudited`, `audit_expired`, stale files, removed files, and untracked candidate project files as actionable pending code symbol slices for their relevant scope. These states can move work forward but keep coverage `partial`.
 
-Use the recorded file hashes in `coverage-map.json` and `symbol-audit-map.json` to focus future passes on changed files and newly discovered symbols. For large first scans, assign work from `suggested_slices`; the coordinator must merge outputs, rerun the inventory command, and keep coverage `partial` until no pending, stale, pending_review, not_checked, unaudited, or audit_expired items remain.
+Use the recorded file hashes in `coverage-map.json` and `symbol-audit-map.json` to focus future passes on changed files and newly discovered symbols. For large first scans, assign repository coverage work from `suggested_slices` and default product/runtime health audit work from `suggested_audit_slices`; the coordinator must merge outputs, rerun the inventory command, and keep coverage `partial` until no pending, stale, pending_review, not_checked, or requested-scope `unaudited`/`audit_expired` items remain.
 
 ## Structure
 
@@ -99,13 +102,13 @@ Create:
 - Name the class-level document `<Kind> <Name>.md`, such as `Class A.md`.
 - Name methods `<Owner>.<method>.md`, such as `A.a.md`.
 - Name module-level functions `<function>.md`, such as `B.md`.
-- Give every function or method with expanded detail docs a sibling directory with the same symbol name, such as `A.a/` or `B/`.
+- Give every class, function, or method with expanded detail docs a sibling directory with the same symbol name, such as `Class A/`, `A.a/`, or `B/`.
 - If a language allows overloads or duplicate local symbols, keep the symbolic prefix and append the smallest stable disambiguator, such as `Parser.parse__arity2.md` or `parse__line42.md`.
 - If a source symbol contains characters that cannot be used in a file name, use the closest readable safe name and store the exact symbol in YAML frontmatter.
 
 Do not use `README.md` inside `code/`. Do not create generic `functions.md` inventories as the main deliverable.
 
-## Function Or Method Entry Docs
+## Class, Function, Or Method Entry Docs
 
 The entry document is a compact symbol card. It must help an agent decide whether to read details or inspect source. Keep it focused on evidence and navigation.
 
@@ -170,7 +173,7 @@ audit:
 
 ## Health Summary Fields
 
-Every function or method entry doc must include a compact health summary:
+Every class, function, or method entry doc must include a compact health summary:
 
 ```yaml
 health:
@@ -243,11 +246,12 @@ Keep issues evidence-based. Do not create an issue for every non-ideal dimension
 
 Use scope-aware coverage:
 
-- During project initialization or exploration, document code symbols by slices. Record every uncovered stable source file, top-level function, and class method in `project/build-plan.md`.
+- During project initialization or exploration, document code symbols by slices. Record every uncovered stable source file, top-level class, top-level function, and class method in `project/build-plan.md`.
+- During default product/runtime health audits, prioritize only `default_health_audit` entries (`runtime_source` and `library_source`). Use tests as evidence for `test_coverage`, not as equal-priority production risk targets unless requested.
 - During feature, refactor, or bug-fix work, update only touched symbols and directly affected high-risk callers or callees unless the user asks for broader coverage.
 - Run `scripts/inventory_symbols.py` to generate or refresh `project/source-symbol-inventory.json`, `project/coverage-map.json`, and `project/symbol-audit-map.json` before claiming complete source symbol coverage.
-- For large projects, keep code symbol coverage `partial` until every stable source file has an inventory and every top-level function and class method has an entry doc with health, or is explicitly out of scope.
-- Do not mark code symbol coverage `current` unless every stable source file is inventoried, every required top-level class, top-level function, and class method is audited or explicitly out of scope, and every required top-level function and class method is documented through a coverage closure audit. Pending symbol or audit slices keep coverage `partial`.
+- For large projects, keep code symbol coverage `partial` until every stable source file has an inventory and every top-level class, top-level function, and class method has an entry doc with health, or is explicitly out of scope.
+- Do not mark repository code symbol coverage `current` unless every stable source file is inventoried and every required top-level class, top-level function, and class method is documented through a coverage closure audit. Do not mark default product/runtime health audit `current` unless every `default_health_audit` top-level class, top-level function, and class method is audited or explicitly out of scope. Pending symbol or requested-scope audit slices keep coverage `partial`.
 
 Prioritize:
 
@@ -267,6 +271,8 @@ Use this entry doc template for functions and methods:
 symbol: A.a
 kind: method
 source: src/foo/a.py
+source_role: runtime_source
+audit_scope: default_health_audit
 class: A
 signature: "a(x, y)"
 health:
