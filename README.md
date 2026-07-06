@@ -20,13 +20,14 @@ skills/
       templates.md
     scripts/
       check_doc_sizes.py
+      audit_integrity.py
       inventory_symbols.py
   project-maintainer.zip
 ```
 
 ## Version
 
-Current version: `0.0.5`
+Current version: `0.0.7`
 
 ## What The Skill Does
 
@@ -34,7 +35,10 @@ Current version: `0.0.5`
 - Documents project overview, architecture, module boundaries, and directory responsibilities.
 - Documents cross-boundary causal flows for user-visible, stateful, generated, integration, background, or operator-facing behavior.
 - Documents every stable source file, top-level class, top-level function, and class method using a source-mirrored `code/` tree with class, function, and method health assessment.
+- Routes work into Knowledge Base Delivery Mode when the `.doc_project_maintainer/` artifact is the requested deliverable, and Maintenance-Aware Fix Mode when Project Maintainer is requested during a bug fix, feature change, or refactor.
 - Generates source symbol inventories, git-linked coverage maps, and symbol audit maps through a dependency-light script that automatically uses stronger extractors when available and falls back without blocking.
+- Promotes and verifies audit status transitions through `scripts/audit_integrity.py`, including HMAC-SHA256 integrity metadata, source and entry-doc hash checks, and trusted/provisional/suspicious/invalid agent audit reporting.
+- Requires single-symbol health audits to be performed by the current agent after reading implementation evidence, and multiple-symbol health audits to use one audit agent per required symbol instead of bulk script-generated health.
 - Classifies inventoried files with `source_role` and `audit_scope` so full repository coverage stays separate from default runtime/library health audit.
 - Records a directory disposition summary showing recorded source directories, excluded directories with reasons, and skipped non-source directories.
 - Summarizes git history by module, directory, flow, and code symbol when applicable.
@@ -45,7 +49,7 @@ Current version: `0.0.5`
 - Requires a coverage closure audit before marking project-wide coverage or sync status as current.
 - Requires full repository analysis goals to continue through actionable pending slices instead of ending after a partial map.
 - Requires every top-level class, top-level function, and class method to have `Actual Role` plus health before code symbol coverage can be current; pending symbol slices keep coverage partial.
-- Requires agents to update the maintenance artifact after code development when behavior or structure changes.
+- Requires agents to synchronize affected artifact slices after verified code changes when Project Maintainer is used during repair or development.
 - Enforces small file budgets so future agents can read only the relevant slices.
 
 ## Validation

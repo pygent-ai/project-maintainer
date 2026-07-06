@@ -26,14 +26,18 @@ Start with `INDEX.md`, then `manifest.yaml`, then the module, directory, code sy
 ## Maintenance Rules
 
 - Keep files within the size budgets in `references/artifact-structure.md`.
+- Use Knowledge Base Delivery Mode when `.doc_project_maintainer/` is the requested deliverable. Use Maintenance-Aware Fix Mode when Project Maintainer is requested during a bug fix, feature change, or refactor.
 - Update module docs, directory docs, flow docs, changes, and decisions after project or code behavior, structure, contract, test strategy, health, or knowledge-model changes.
 - Do not create change records for routine artifact-only sync, formatting, generated index refreshes, link maintenance, or documentation updates that merely mirror an already-recorded project or code change.
 - Update code symbol docs and class, function, or method health after source behavior, contracts, side effects, risks, or tests change.
 - Check existing artifact sync status before relying on it.
+- In Maintenance-Aware Fix Mode, Project Maintainer must not be the primary debugging workflow: check whether `.doc_project_maintainer/` exists, ask the user whether to analyze first when relevant coverage is missing, use the external debugging or development workflow for the fix, then synchronize affected artifact slices after verification because artifact maintenance becomes part of the task completion criteria.
 - Do not mark the artifact `current` without a recorded coverage closure audit and no actionable pending slices.
 - Do not mark cross-boundary behavior `current` unless required flows are documented or out of scope.
 - Do not mark repository code symbol coverage `current` unless every stable source file has a symbol inventory, every top-level class, top-level function, and class method has a symbol audit map record, and every top-level class, top-level function, and class method has an entry doc with `Actual Role` and health.
 - Do not mark default product/runtime health audit `current` unless every `default_health_audit` top-level class, top-level function, and class method is audited or out of scope in `symbol-audit-map.json`.
+- Treat `audit.status: script_assessed` as script progress only. It does not satisfy trusted agent, human, or out-of-scope audit closure and must remain pending until real agent or human review is promoted through `scripts/audit_integrity.py` and verified as `trusted_agent_audit`.
+- For a `single symbol audit`, the current agent must read the symbol implementation, needed callers or callees, and related test evidence before recording health. For a `multiple symbol audit`, use one audit agent per required symbol; scripts may only inventory, queue, validate, or record reviewed results and must not bulk-generate health.
 - Mark uncertain claims with `confidence: inferred` or `confidence: unknown`.
 ```
 
@@ -170,7 +174,7 @@ code_symbols:
       observability: "not_applicable"
       performance_risk: "low"
     audit:
-      status: "unaudited" # unaudited | agent_audited | human_audited | audit_expired | out_of_scope
+      status: "unaudited" # unaudited | script_assessed | agent_audited | human_audited | audit_expired | out_of_scope
       auditor: null
       audited_at: null
       audited_commit: null
@@ -247,16 +251,25 @@ symbol_audit_map:
   audit_scope_summary: {}
   audit_statuses:
     unaudited: 0
+    script_assessed: 0
     agent_audited: 0
     human_audited: 0
     audit_expired: 0
     out_of_scope: 0
   health_audit_summary:
     unaudited: 0
+    script_assessed: 0
     agent_audited: 0
     human_audited: 0
     audit_expired: 0
     out_of_scope: 0
+  audit_integrity_summary:
+    provisional_agent_audit: 0
+    trusted_agent_audit: 0
+    suspicious_agent_audit: 0
+    invalid_agent_audit: 0
+    closure_eligible: 0
+    pending: 0
   health_dimensions:
     - "overall"
     - "name_behavior_match"
@@ -311,6 +324,8 @@ code_symbol_coverage_status: planned | partial | current
 - Symbol audit map:
 - Symbol audit status counts:
 - Default health audit status counts:
+- Machine assessment status counts:
+- Default health audit machine assessment counts:
 - Directory summary:
 - Open symbol issues:
 - Git head inventoried:
@@ -347,15 +362,17 @@ Pending code symbol slices mean code symbol coverage remains `partial` until the
 
 ## Pending Symbol Audit Slices
 
-- `symbol-id`: `unaudited` or `audit_expired` class, top-level function, or class method in the requested audit scope; required reviewer type; health dimensions to verify; open issue follow-up
+- `symbol-id`: `unaudited`, `script_assessed`, `audit_expired`, suspicious, invalid, or untrusted class, top-level function, or class method in the requested audit scope; required reviewer type; whether a real audit agent or human has been assigned; health dimensions to verify; implementation, caller/callee, test, and flow evidence to inspect; open issue follow-up
 
-Pending symbol audit slices mean requested-scope health audit remains `partial` until each required symbol is `agent_audited`, `human_audited`, or explicitly `out_of_scope`.
+Pending symbol audit slices mean requested-scope health audit remains `partial` until each required symbol is `human_audited`, explicitly `out_of_scope`, or `agent_audited` with a latest `trusted_agent_audit` verification result. `scripts/inventory_symbols.py` is not an auditor; script output, generated docs, extractor confidence, placeholder health fields, and `audit.status: script_assessed` must remain pending until a real audit agent has read the symbol implementation, recorded evidence-based conclusions, and promoted the result through `scripts/audit_integrity.py`.
+
+For a `single symbol audit`, the assigned agent records evidence and promotes only that symbol. For a `multiple symbol audit`, assign one audit agent per required symbol by default. If independent audit agents are unavailable, leave the remaining symbols here as pending instead of bulk-generating health through a script.
 
 ## Suggested Subagent Queue
 
 - `slice-id`: files, symbols, status, source roles, audit scopes, assigned agent, blocker, and integration state from `project/coverage-map.json`
 
-Use `suggested_slices` for repository coverage and `suggested_audit_slices` for default product/runtime health audit when the coverage map recommends `multi-agent`. The coordinator owns assignment, merge, manifest/index updates, and rerunning the inventory command after each integrated batch.
+Use `suggested_slices` for repository coverage and `suggested_audit_slices` for default product/runtime health audit when the coverage map recommends `multi-agent`. The coordinator owns assignment, merge, manifest/index updates, and rerunning the inventory command after each integrated batch. Expand `suggested_audit_slices` into symbol-level audit assignments before closure work so each closure-eligible agent audit comes from its own symbol review.
 
 ## Coverage Closure Audit
 

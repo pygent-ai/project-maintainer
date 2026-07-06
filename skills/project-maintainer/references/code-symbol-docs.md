@@ -115,7 +115,7 @@ The entry document is a compact symbol card. It must help an agent decide whethe
 Include only:
 
 - YAML frontmatter with stable symbol metadata, summarized health, confidence, and links to detail docs.
-- YAML frontmatter with audit status, auditor metadata, issue records, summarized health, confidence, and links to detail docs.
+- YAML frontmatter with audit status, optional machine assessment status, auditor metadata, issue records, summarized health, confidence, and links to detail docs.
 - `Actual Role`: one to three sentences describing what the function actually does based on the body.
 - `Key Signals`: compact bullets for input, output, side effects, primary risk, and related tests.
 - `Detail Index`: links to detail docs that exist or are intentionally pending.
@@ -151,16 +151,19 @@ Each detail doc should be narrow. Split again only if it exceeds the size budget
 Every class, function, and method audit record must use one of:
 
 - `unaudited`: no agent or human has reviewed behavior, health, and issues.
-- `agent_audited`: an agent reviewed behavior, health, and issues and recorded evidence.
+- `script_assessed`: `scripts/audit_integrity.py` processed the record, but no agent or human audit is trusted for closure.
+- `agent_audited`: a real audit agent reviewed behavior, health, and issues and recorded evidence from the implementation, relevant callers or callees, and tests or missing-test evidence. This status is provisional until `scripts/audit_integrity.py verify` or `report` classifies the record as `trusted_agent_audit`.
 - `human_audited`: a human reviewed or confirmed behavior, health, and issues.
 - `audit_expired`: the source hash changed since the recorded audit.
 - `out_of_scope`: the symbol is intentionally excluded with a reason.
+
+`scripts/inventory_symbols.py` is not an auditor. It reads audit metadata from entry docs, preserves matching prior audited records, and expires stale records; it does not perform the review required for `agent_audited`. A generated entry doc, extractor confidence, placeholder health block, or clean script run must remain `unaudited` or `script_assessed` until a real audit agent or human has read the symbol implementation and recorded evidence-based conclusions.
 
 Use this compact audit block in entry docs when a symbol has been reviewed:
 
 ```yaml
 audit:
-  status: agent_audited | human_audited | unaudited | audit_expired | out_of_scope
+  status: unaudited | script_assessed | agent_audited | human_audited | audit_expired | out_of_scope
   auditor: codex | human-name | null
   audited_at: "YYYY-MM-DDTHH:MM:SSZ"
   audited_commit: abc1234
@@ -170,6 +173,31 @@ audit:
 ```
 
 `scripts/inventory_symbols.py` preserves previous `agent_audited` and `human_audited` states only while `audited_source_hash` matches the current source hash. If the hash differs, the generated audit map marks the symbol `audit_expired`.
+
+## Controlled Audit Entrypoint
+
+Use `scripts/audit_integrity.py` for audit status transitions and integrity signing. The `promote` command records HMAC-SHA256 integrity metadata, source and entry-doc hashes, the script hash, git state, and an optional agent call signature batch. If the signature batch is missing, `promote` records `audit.status: script_assessed` plus `missing_agent_call_signature` instead of writing `agent_audited`.
+
+```text
+closure_eligible =
+  audit.status == "human_audited"
+  OR audit.status == "out_of_scope"
+  OR (
+    audit.status == "agent_audited"
+    AND latest_verification.trust_result == "trusted_agent_audit"
+  )
+```
+
+`script_assessed`, `provisional_agent_audit`, `suspicious_agent_audit`, and `invalid_agent_audit` do not satisfy audit closure. A symbol in one of those states must remain pending in the requested health audit scope until a real agent or human review is promoted and verified as trusted, or the symbol is explicitly marked out of scope.
+
+## Symbol Health Audit Workflow
+
+Use this workflow for any class, top-level function, method, or signature health audit.
+
+- For a `single symbol audit`, the current agent must read the implementation, the relevant callers or callees needed to understand behavior, direct or missing test evidence, and any linked flow or code symbol docs before writing `Actual Role`, health, issues, or audit rationale. After the evidence-backed entry doc update, use `scripts/audit_integrity.py promote` to record that one symbol and run `verify` or `report`.
+- For a `multiple symbol audit`, the coordinator must assign one audit agent per required symbol by default. Each audit agent owns code exploration, health judgment, entry-doc update, and controlled promotion for exactly its assigned symbol.
+- Coordination scripts may only inventory, queue, validate, or record reviewed results. They must not bulk-generate health, `Actual Role`, issues, rationale, or `agent_audited` status for many symbols.
+- If independent audit agents are unavailable, keep the remaining symbols in `Pending Symbol Audit Slices` and keep requested-scope health audit status `partial`. Do not convert script output, generated placeholders, repeated prompt output, or reused tool-call batches into closure-eligible symbol audits.
 
 ## Health Summary Fields
 
@@ -248,10 +276,12 @@ Use scope-aware coverage:
 
 - During project initialization or exploration, document code symbols by slices. Record every uncovered stable source file, top-level class, top-level function, and class method in `project/build-plan.md`.
 - During default product/runtime health audits, prioritize only `default_health_audit` entries (`runtime_source` and `library_source`). Use tests as evidence for `test_coverage`, not as equal-priority production risk targets unless requested.
+- During health audits, distinguish `single symbol audit` from `multiple symbol audit`. A single symbol must be reviewed by the current agent before promotion; multiple symbols require one audit agent per required symbol by default.
 - During feature, refactor, or bug-fix work, update only touched symbols and directly affected high-risk callers or callees unless the user asks for broader coverage.
 - Run `scripts/inventory_symbols.py` to generate or refresh `project/source-symbol-inventory.json`, `project/coverage-map.json`, and `project/symbol-audit-map.json` before claiming complete source symbol coverage.
 - For large projects, keep code symbol coverage `partial` until every stable source file has an inventory and every top-level class, top-level function, and class method has an entry doc with health, or is explicitly out of scope.
 - Do not mark repository code symbol coverage `current` unless every stable source file is inventoried and every required top-level class, top-level function, and class method is documented through a coverage closure audit. Do not mark default product/runtime health audit `current` unless every `default_health_audit` top-level class, top-level function, and class method is audited or explicitly out of scope. Pending symbol or requested-scope audit slices keep coverage `partial`.
+- Treat `audit.status: script_assessed` as script progress only. It does not satisfy audit closure and must remain pending until promoted by a real agent or human review and verified as `trusted_agent_audit`.
 
 Prioritize:
 
@@ -293,12 +323,12 @@ health:
   observability: not_applicable
   performance_risk: low
 audit:
-  status: agent_audited
-  auditor: codex
-  audited_at: "YYYY-MM-DDTHH:MM:SSZ"
-  audited_commit: abc1234
-  audited_source_hash: sha256...
-  confidence: inferred
+  status: unaudited
+  auditor: null
+  audited_at: null
+  audited_commit: null
+  audited_source_hash: null
+  confidence: unknown
   expired_reason: null
 issues:
   - id: ISSUE-001

@@ -1,6 +1,6 @@
 ---
 name: project-maintainer
-description: Use when initializing or updating structured in-repository project-maintenance docs; exploring existing code; analyzing a full project or repository; documenting complete source symbol coverage, coverage maps, symbol audit maps, or health for every top-level class, top-level function, and class method; summarizing git history; or syncing docs after a feature, refactor, or bug fix.
+description: Use when initializing or updating structured in-repository project-maintenance docs; exploring existing code; analyzing a full project or repository; documenting complete source symbol coverage, coverage maps, symbol audit maps, or health for every top-level class, top-level function, and class method; summarizing git history; using project-maintainer as maintenance-aware context during a bug fix, feature change, or refactor; or syncing docs after verified code changes.
 ---
 
 # Project Maintainer
@@ -19,6 +19,34 @@ Use four complementary views:
 Flow docs are required when behavior crosses module, process, service, runtime, storage, protocol, or UI boundaries and affects state or output that users, operators, integrations, or future agents rely on.
 
 Keep files small enough for selective reading. Prefer indexes, summaries, and links over repeated narrative.
+
+## Task Intent Router
+
+Classify the user's intent before choosing a workflow.
+
+### Knowledge Base Delivery Mode
+
+Use this mode when the user asks to initialize, analyze, map, document, audit, summarize, make current, or deliver `.doc_project_maintainer/` as the main output.
+
+1. Run Preflight.
+2. If no artifact exists, initialize or explore according to the relevant workflow below.
+3. If an artifact exists, assess staleness and choose the required build, coverage, flow, code symbol, audit, or git-history slices.
+4. Continue until the requested deliverable is complete, or leave exact pending slices in `project/build-plan.md` and report partial status.
+
+### Maintenance-Aware Fix Mode
+
+Use this mode when the user asks to use Project Maintainer during a bug fix, feature change, refactor, or defect repair.
+
+Project Maintainer must not be the primary debugging workflow. Reproduction, diagnosis, test-first repair, implementation, and verification belong to the debugging or development workflow. Project Maintainer provides context before the fix and artifact maintenance after the fix.
+
+1. Run a context preflight before changing code:
+   - check whether `.doc_project_maintainer/` exists,
+   - if it exists, read only the relevant module, directory, flow, code symbol, change, and decision docs,
+   - if it does not exist, or if the relevant area is not analyzed, ask the user whether to analyze first before continuing with the fix.
+2. If the user declines analysis or the artifact is not available, continue the external debugging workflow with normal code inspection and record that project-maintainer context was unavailable or incomplete.
+3. During the fix, note affected modules, directories, flows, code symbols, decisions, tests, and any artifact claims that are stale or contradicted by the code.
+4. After verification, artifact maintenance becomes part of the task completion criteria: synchronize affected artifact slices after verification, including module docs, directory docs, flow docs, code symbol docs and health, change records, decisions, manifest links, indexes, and `project/build-plan.md` when relevant.
+5. If the artifact is stale in areas that affect the fix, update those stale slices before final response when feasible. If synchronization cannot be completed safely, keep the task partial for project-maintainer purposes and report the exact pending sync items.
 
 ## Preflight
 
@@ -134,9 +162,10 @@ Use `project/coverage-map.json` as the machine-readable progress ledger for full
    - `directory_summary` records which directories were included as source, excluded by rule, or skipped as non-source.
 4. Use multi-agent slicing when more than 20 stable source files, more than 80 required symbols, or any module slice with more than 40 symbols is pending or stale. If multi-agent tools are unavailable, continue serially by `suggested_slices` and keep coverage `partial`.
 5. Use `suggested_slices` for repository coverage and `suggested_audit_slices` for default product/runtime health audit. Do not use repository-only test, fixture, script, tooling, docs, or package metadata slices as production risk samples unless the user asks for that scope.
-6. Coordinator owns closure. The Coordinator assigns `suggested_slices` or `suggested_audit_slices` according to the requested scope, gives each subagent only its assigned source paths and required templates, prevents overlapping edits, integrates outputs into `manifest.yaml`, `INDEX.md`, code docs, flow docs, `project/coverage-map.json`, and `project/build-plan.md`, then reruns the inventory command.
-7. Subagents must report affected files, functions, class methods, modules, directories, flows, health status, tests, confidence, blockers, and any out-of-scope proposal for their assigned slice only.
-8. Do not mark a full-repository goal complete while `coverage-map.json` contains pending, stale, pending_review, not_checked, removed, or candidate project file work that has not been documented, reviewed, removed from the artifact, or explicitly dispositioned.
+6. Coordinator owns repository coverage closure. The Coordinator assigns `suggested_slices` according to the requested scope, gives each subagent only its assigned source paths and required templates, prevents overlapping edits, integrates outputs into `manifest.yaml`, `INDEX.md`, code docs, flow docs, `project/coverage-map.json`, and `project/build-plan.md`, then reruns the inventory command.
+7. Coordinator owns health audit closure separately. For `suggested_audit_slices`, expand pending audit work into `multiple symbol audit` assignments and use one audit agent per required symbol by default. The coordinator may group symbols for queue management, but each closure-eligible `agent_audited` record needs its own symbol-level audit workflow below.
+8. Subagents must report affected files, functions, class methods, modules, directories, flows, health status, tests, confidence, blockers, and any out-of-scope proposal for their assigned slice only.
+9. Do not mark a full-repository goal complete while `coverage-map.json` contains pending, stale, pending_review, not_checked, removed, or candidate project file work that has not been documented, reviewed, removed from the artifact, or explicitly dispositioned.
 
 ### Symbol Audit Map
 
@@ -146,7 +175,8 @@ Use `project/symbol-audit-map.json` as the machine-readable audit ledger for eve
 2. Preserve repository-wide audit records for all roles, but treat `default_health_audit` entries as the default product/runtime risk pool. Repository-only entries should support completeness, test evidence, and explicit non-runtime audits.
 3. Treat `audit.status` as the audit state:
    - `unaudited`: no agent or human has reviewed the symbol behavior, health, and issues.
-   - `agent_audited`: an agent reviewed the symbol and recorded health plus issues with evidence.
+   - `script_assessed`: the controlled audit integrity entrypoint processed the symbol, but no agent or human audit has been accepted for trusted closure.
+   - `agent_audited`: an agent audit claim was accepted through `scripts/audit_integrity.py promote` with an agent call signature; it is provisional until `verify` or `report` classifies it as `trusted_agent_audit`.
    - `human_audited`: a human reviewed or confirmed the symbol and recorded health plus issues with evidence.
    - `audit_expired`: the symbol was audited, but current source hash differs from the audited source hash.
    - `out_of_scope`: the symbol is intentionally excluded with a reason.
@@ -154,7 +184,33 @@ Use `project/symbol-audit-map.json` as the machine-readable audit ledger for eve
 5. Record concrete findings in `issues[]`; each issue needs `dimension`, `severity`, `status`, `summary`, `evidence`, and `suggested_action`. Health dimensions classify the risk; issues explain the evidence.
 6. Preserve previous `agent_audited` or `human_audited` records when the current source hash still matches `audited_source_hash`.
 7. Automatically treat a previously audited symbol as `audit_expired` when the source hash changes. Do not silently keep old health or issues as current.
-8. Do not mark default product/runtime health audit or a full-repository health-audit goal `current` while required symbols in the requested audit scope remain `unaudited` or `audit_expired`, unless they are explicitly `out_of_scope` with a reason.
+8. Do not mark default product/runtime health audit or a full-repository health-audit goal `current` while required symbols in the requested audit scope remain `unaudited`, `script_assessed`, `audit_expired`, or untrusted `agent_audited`, unless they are explicitly `out_of_scope` with a reason.
+9. Treat health-audit closure as a derived predicate, not a raw status count: `closure_eligible` is true only for `human_audited`, `out_of_scope`, or `agent_audited` records whose latest integrity verification result is `trusted_agent_audit`. `script_assessed`, `provisional_agent_audit`, `suspicious_agent_audit`, and `invalid_agent_audit` must remain pending for closure.
+
+### Agent Symbol Audit Contract
+
+Use this contract before changing any symbol audit status from `unaudited`, `script_assessed`, or `audit_expired` to `agent_audited`.
+
+1. `scripts/inventory_symbols.py` is not an auditor. It may inventory symbols, verify entry docs, preserve matching prior audit records, and expire stale audit records, but it must not mark a symbol `agent_audited` by itself.
+2. Audit status writes must go through `scripts/audit_integrity.py`. The `promote` command may write `script_assessed` for script-only progress or provisional `agent_audited` when a recent agent call signature batch is supplied.
+3. A symbol may become `agent_audited` only after a real audit agent has reviewed that assigned symbol or slice. The audit agent must read the symbol implementation, relevant callers or callees needed to understand behavior, related tests or missing-test evidence, and any linked flow or code symbol docs that affect the health judgment.
+4. The audit agent must record evidence-based health dimensions and issues for the assigned class, top-level function, or class method. Evidence should cite observed behavior, source paths, tests, error handling, state mutation, side effects, contracts, or missing verification.
+5. A coordinator may copy or integrate the audit agent's conclusion into entry docs and `project/symbol-audit-map.json`, but the coordinator must not mark a symbol `agent_audited` from script output, extractor confidence, generated health placeholders, or the mere existence of an entry doc.
+6. If `promote` is missing required agent-promotion metadata such as `--agent-call-signature-json`, it should downgrade the record to `audit.status: script_assessed` and report `missing_agent_call_signature` instead of failing the whole workflow by default.
+7. If no real audit agent or human has performed the review, the symbol must remain `unaudited` or `script_assessed`, even when entry docs contain `Actual Role`, health fields, and no known issues.
+
+### Symbol Health Audit Workflow
+
+Use this workflow whenever the task asks for health, risk, correctness, or audit judgment for a class, top-level function, method, or signature.
+
+1. Classify the request before doing audit work:
+   - `single symbol audit`: exactly one class, top-level function, method, or signature is in scope. The current agent must personally read that symbol's implementation, relevant callers or callees needed to understand behavior, related tests or explicit missing-test evidence, and linked flow or code symbol docs before recording health.
+   - `multiple symbol audit`: two or more classes, top-level functions, methods, or signatures are in scope. The coordinator must create one audit agent per required symbol by default. Each audit agent must complete code exploration, health judgment, entry-doc update, and controlled promotion for only its assigned symbol.
+2. For a `single symbol audit`, update the symbol entry doc with evidence-backed `Actual Role`, health dimensions, issues, and key signals, then run `scripts/audit_integrity.py promote` for that symbol only. Run `verify` or `report` afterward and keep the symbol pending unless the latest result is closure-eligible.
+3. For a `multiple symbol audit`, the coordinator may run scripts to discover pending symbols, create queues, verify entry docs, check formatting, or integrate completed records. These scripts may only inventory, queue, validate, or record reviewed results; they must not bulk-generate health, issues, `Actual Role`, audit rationale, or `agent_audited` status for multiple symbols.
+4. Bulk script output, spreadsheet transforms, JSON rewrites, extractor confidence, generated health placeholders, repeated prompts over many symbols, or reused tool-call batches are not symbol health audits. Treat that output as `script_assessed` or planning evidence only.
+5. If independent audit agents are unavailable, leave unaudited symbols in `Pending Symbol Audit Slices`, keep requested-scope health audit status `partial`, and state the exact pending symbols. Do not collapse the work into a bulk script audit to claim `current`.
+6. A human may explicitly approve a lower-trust triage mode, but triage results remain `script_assessed`, `unaudited`, or otherwise non-closure-eligible until a real per-symbol audit agent or human review completes the controlled workflow.
 
 ### Trace Cross-Boundary Causal Flows
 
@@ -216,9 +272,9 @@ Use this when a git repository exists and history should be documented.
 8. If an artifact update changes the project knowledge model itself, such as module boundaries, flow traces, coverage status, symbol audit disposition, out-of-scope decisions, or corrected architectural understanding, record that semantic knowledge-model change and explain the evidence.
 9. Do not invent intent. Use `confidence: confirmed` only when commit messages, issues, PRs, docs, or code context clearly support the reason. Otherwise use `confidence: inferred` or `confidence: unknown`.
 
-### Update After Feature Or Fix
+### Update After Verified Change
 
-Use this whenever code changes alter behavior, structure, boundaries, dependencies, or known defects.
+Use this after verified feature, refactor, or bug-fix work changes behavior, structure, boundaries, dependencies, tests, or known defects. In Maintenance-Aware Fix Mode, this update is part of completion criteria, not an optional follow-up.
 
 1. Update affected module docs.
 2. Update affected directory docs.
@@ -227,19 +283,8 @@ Use this whenever code changes alter behavior, structure, boundaries, dependenci
 5. Add or update change records only when the underlying project, source, tests, architecture, contracts, or knowledge model changed in a way future maintainers need to understand. Do not add records for routine artifact synchronization alone.
 6. Add or update decision records when design rationale changed.
 7. Update `manifest.yaml`, `INDEX.md`, and any `changes/by-*` index that points to the new records.
-8. Update `project/build-plan.md` when the task changes coverage, known gaps, pending flow slices, pending code symbol slices, or next steps.
+8. Update `project/build-plan.md` when the task changes coverage, known gaps, pending flow slices, pending code symbol slices, stale analysis, or next steps.
 9. Run the size-check script when available.
-
-### Develop Code With This Skill
-
-When this skill is used during feature development, refactoring, or defect repair, treat artifact sync as part of the completion criteria.
-
-1. Before coding, read the relevant module and directory docs if they exist.
-2. Read relevant flow docs when the task affects cross-boundary behavior, durable state, generated output, replay, integration, background status, or user/operator-visible output.
-3. Read relevant code symbol docs when editing or calling documented source files, classes, functions, or methods.
-4. During coding, note affected modules, directories, flows, code symbols, decisions, and changes.
-5. After coding and verification, update the corresponding artifact files before the final response when feasible.
-6. If artifact sync is needed but cannot be completed safely in the current turn, state the pending sync clearly in the final response and include the affected modules, directories, flows, or code symbols.
 
 ## Final Response Checklist
 
@@ -253,7 +298,7 @@ Before finishing a task that used this skill:
 - For complete or full-repository deliverables, state whether every stable source file has a symbol inventory and whether every top-level class, top-level function, and class method has an entry doc with `Actual Role` and health.
 - For complete or full-repository deliverables, summarize `directory_summary`: recorded source directories, excluded directories with reasons, and skipped non-source directories.
 - For complete or full-repository deliverables, state the `coverage-map.json` summary, recommended mode, whether any `suggested_slices` remain, and whether any `suggested_audit_slices` remain for the default health audit scope.
-- For complete or full-repository deliverables, state the repository-wide `symbol-audit-map.json` summary and the `health_audit_summary`, including unaudited, agent_audited, human_audited, audit_expired, out_of_scope, and open issue counts for the requested audit scope.
+- For complete or full-repository deliverables, state the repository-wide `symbol-audit-map.json` summary and the `health_audit_summary`, including unaudited, script_assessed, agent_audited, human_audited, audit_expired, out_of_scope, open issue counts, and the latest audit integrity report's provisional, trusted, suspicious, invalid, closure-eligible, and pending counts for the requested audit scope. `script_assessed` and untrusted `agent_audited` records do not satisfy audit closure.
 - If sync is pending, name the affected module, directory, flow, or code symbol docs and the reason.
 - If the project is only partially mapped, point to `project/build-plan.md` and summarize the next slice.
 - If the task was a full-repository analysis goal, state whether actionable pending slices remain. Do not describe the goal as complete unless none remain.

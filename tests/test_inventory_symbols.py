@@ -17,6 +17,76 @@ def write(path: Path, content: str) -> None:
 
 
 class InventorySymbolScopeTests(unittest.TestCase):
+    def test_script_assessed_status_does_not_count_as_agent_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            write(
+                project / "app" / "server.py",
+                """
+                def handle_request(value):
+                    return value.strip()
+                """,
+            )
+            write(
+                project
+                / ".doc_project_maintainer"
+                / "code"
+                / "app"
+                / "server.py"
+                / "handle_request.md",
+                """
+                ---
+                health:
+                  overall: watch
+                audit:
+                  status: script_assessed
+                  auditor: null
+                  audited_at: null
+                  audited_commit: null
+                  audited_source_hash: null
+                  confidence: unknown
+                  expired_reason: null
+                ---
+
+                # handle_request
+
+                ## Actual Role
+
+                Strips whitespace from the provided value.
+                """,
+            )
+
+            subprocess.run(["git", "init"], cwd=project, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "add", "."], cwd=project, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            audit_path = project / ".doc_project_maintainer" / "project" / "symbol-audit-map.json"
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(INVENTORY_SCRIPT),
+                    str(project),
+                    "--audit-map-output",
+                    str(audit_path),
+                    "--verify-docs",
+                    "--pretty",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            symbol = audit["symbols"][0]
+
+            self.assertEqual(symbol["audit"]["status"], "script_assessed")
+            self.assertNotIn("machine_assessment", symbol)
+            self.assertIn("script_assessed", audit["audit_statuses"])
+            self.assertEqual(audit["summary"]["script_assessed"], 1)
+            self.assertEqual(audit["summary"]["agent_audited"], 0)
+            self.assertNotIn("machine_assessment_summary", audit)
+
     def test_class_entry_doc_is_required_for_verified_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project = Path(temp_dir)

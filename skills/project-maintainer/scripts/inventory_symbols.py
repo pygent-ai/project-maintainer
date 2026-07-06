@@ -73,7 +73,7 @@ MULTI_AGENT_SYMBOL_THRESHOLD = 80
 MODULE_SYMBOL_THRESHOLD = 40
 MAX_SYMBOLS_PER_SLICE = 60
 
-AUDIT_STATUSES = ("unaudited", "agent_audited", "human_audited", "audit_expired", "out_of_scope")
+AUDIT_STATUSES = ("unaudited", "script_assessed", "agent_audited", "human_audited", "audit_expired", "out_of_scope")
 AUDITED_STATUSES = {"agent_audited", "human_audited"}
 REQUIRED_ENTRY_DOC_KINDS = {"class", "function", "method"}
 HEALTH_DIMENSIONS = (
@@ -871,12 +871,24 @@ def normalize_issues(metadata: dict[str, Any]) -> list[dict[str, Any]]:
 
 def normalize_doc_audit(metadata: dict[str, Any]) -> dict[str, Any] | None:
     raw = metadata.get("audit")
+    legacy_machine = metadata.get("machine_assessment")
     if not isinstance(raw, dict):
+        if isinstance(legacy_machine, dict) and legacy_machine.get("status") == "script_assessed":
+            return {
+                "status": "script_assessed",
+                "auditor": legacy_machine.get("tool"),
+                "audited_at": legacy_machine.get("assessed_at"),
+                "audited_commit": None,
+                "audited_source_hash": legacy_machine.get("source_hash"),
+                "confidence": "unknown",
+                "expired_reason": None,
+                "downgrade_reason": "legacy_machine_assessment",
+            }
         return None
     status = str(raw.get("status") or "unaudited")
     if status not in AUDIT_STATUSES:
         status = "unaudited"
-    return {
+    audit = {
         "status": status,
         "auditor": raw.get("auditor"),
         "audited_at": raw.get("audited_at"),
@@ -885,6 +897,9 @@ def normalize_doc_audit(metadata: dict[str, Any]) -> dict[str, Any] | None:
         "confidence": raw.get("confidence"),
         "expired_reason": raw.get("expired_reason"),
     }
+    if raw.get("downgrade_reason"):
+        audit["downgrade_reason"] = raw.get("downgrade_reason")
+    return audit
 
 
 def verify_docs(root: Path, relative: Path, symbols: list[dict[str, Any]], docs_root: Path) -> dict[str, Any]:
@@ -1502,6 +1517,7 @@ def normalized_audit_record(
         "audited_source_hash": audited_source_hash,
         "confidence": audit.get("confidence") or fallback_confidence or "unknown",
         "expired_reason": audit.get("expired_reason"),
+        **({"downgrade_reason": audit.get("downgrade_reason")} if audit.get("downgrade_reason") else {}),
     }
 
 
@@ -1605,6 +1621,7 @@ def build_symbol_audit_summary(symbols: list[dict[str, Any]]) -> dict[str, Any]:
         "top_level_functions": 0,
         "class_methods": 0,
         "unaudited": 0,
+        "script_assessed": 0,
         "agent_audited": 0,
         "human_audited": 0,
         "audit_expired": 0,
@@ -1623,7 +1640,6 @@ def build_symbol_audit_summary(symbols: list[dict[str, Any]]) -> dict[str, Any]:
             summary[status] += 1
         summary["open_issues"] += sum(1 for issue in item.get("issues", []) if issue.get("status") != "closed")
     return summary
-
 
 def count_symbols_by_field(symbols: list[dict[str, Any]], field: str) -> dict[str, int]:
     counts: dict[str, int] = {}
@@ -1686,6 +1702,7 @@ def build_symbol_audit_map(
             "This map records repository-wide audit state, health snapshots, and issues for every discovered class, top-level function, and top-level class method.",
             "Use health_audit_summary and health_audit_symbols for the default product/runtime health audit; repository-only roles remain coverage and verification evidence unless explicitly requested.",
             "agent_audited and human_audited expire automatically when audited_source_hash differs from the current source hash.",
+            "script_assessed records controlled script processing only; it does not satisfy trusted agent, human, or out-of-scope audit closure.",
         ],
     }
 
