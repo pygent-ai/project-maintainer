@@ -187,6 +187,19 @@ Use `project/symbol-audit-map.json` as the machine-readable audit ledger for eve
 8. Do not mark default product/runtime health audit or a full-repository health-audit goal `current` while required symbols in the requested audit scope remain `unaudited`, `script_assessed`, `audit_expired`, or untrusted `agent_audited`, unless they are explicitly `out_of_scope` with a reason.
 9. Treat health-audit closure as a derived predicate, not a raw status count: `closure_eligible` is true only for `human_audited`, `out_of_scope`, or `agent_audited` records whose latest integrity verification result is `trusted_agent_audit`. `script_assessed`, `provisional_agent_audit`, `suspicious_agent_audit`, and `invalid_agent_audit` must remain pending for closure.
 
+### Generate Audit Visualization Report
+
+Use this when the user asks for a human-readable audit summary, visual audit report, dashboard, HTML report, team review artifact, or security-review artifact.
+
+1. Confirm `.doc_project_maintainer/project/coverage-map.json` and `.doc_project_maintainer/project/symbol-audit-map.json` exist. If they are missing or stale for the requested scope, explain that inventory should be refreshed before the report can be trusted.
+2. Run:
+   ```bash
+   python <skill-dir>/scripts/render_audit_report.py <repo-root>
+   ```
+3. The report generator refreshes trust classification with `audit_integrity.py report` unless `--skip-integrity-refresh` is explicitly used.
+4. Treat the generated `project/audit-report.html` as a presentation artifact only. The JSON maps and symbol docs remain the source of truth.
+5. If inventory, coverage maps, symbol audit maps, or audit integrity reports are refreshed after the HTML report is generated, tell the user the report reflects older data and should be regenerated or refreshed in the browser.
+
 ### Agent Symbol Audit Contract
 
 Use this contract before changing any symbol audit status from `unaudited`, `script_assessed`, or `audit_expired` to `agent_audited`.
@@ -291,6 +304,7 @@ Use this after verified feature, refactor, or bug-fix work changes behavior, str
 Before finishing a task that used this skill:
 
 - State whether `.doc_project_maintainer/` exists.
+- If an audit visualization report was generated, state the HTML path, whether integrity refresh succeeded, and whether any later artifact refresh made the report reflect older data.
 - State whether the artifact was updated, was already current for this task's scope, or still needs sync.
 - If claiming the artifact is `current`, state the coverage closure audit source or why the audit was skipped.
 - State whether affected cross-boundary flow docs were updated, not applicable, or still pending.

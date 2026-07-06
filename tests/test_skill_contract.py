@@ -81,3 +81,18 @@ def test_task_intent_router_separates_delivery_from_maintenance_aware_fix() -> N
     assert "ask the user whether to analyze first" in combined
     assert "artifact maintenance becomes part of the task completion criteria" in combined
     assert "synchronize affected artifact slices after verification" in combined
+
+
+def test_audit_visual_report_workflow_is_documented() -> None:
+    skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    openai_yaml = (SKILL_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
+    combined = "\n".join([skill, readme, openai_yaml])
+
+    assert "render_audit_report.py" in combined
+    assert "audit-report.html" in combined
+    assert "self-contained HTML" in combined
+    assert "audit visualization report" in combined
+    assert "audit_integrity.py report" in combined
+    assert "regenerate" in combined
+    assert "older data" in combined

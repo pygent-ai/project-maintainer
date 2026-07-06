@@ -21,13 +21,14 @@ skills/
     scripts/
       check_doc_sizes.py
       audit_integrity.py
+      render_audit_report.py
       inventory_symbols.py
   project-maintainer.zip
 ```
 
 ## Version
 
-Current version: `0.0.7`
+Current version: `0.0.8`
 
 ## What The Skill Does
 
@@ -38,6 +39,7 @@ Current version: `0.0.7`
 - Routes work into Knowledge Base Delivery Mode when the `.doc_project_maintainer/` artifact is the requested deliverable, and Maintenance-Aware Fix Mode when Project Maintainer is requested during a bug fix, feature change, or refactor.
 - Generates source symbol inventories, git-linked coverage maps, and symbol audit maps through a dependency-light script that automatically uses stronger extractors when available and falls back without blocking.
 - Promotes and verifies audit status transitions through `scripts/audit_integrity.py`, including HMAC-SHA256 integrity metadata, source and entry-doc hash checks, and trusted/provisional/suspicious/invalid agent audit reporting.
+- Generates a self-contained HTML audit visualization report through `scripts/render_audit_report.py`, combining `coverage-map.json`, `symbol-audit-map.json`, and a freshly refreshed `audit_integrity.py report` result for human review.
 - Requires single-symbol health audits to be performed by the current agent after reading implementation evidence, and multiple-symbol health audits to use one audit agent per required symbol instead of bulk script-generated health.
 - Classifies inventoried files with `source_role` and `audit_scope` so full repository coverage stays separate from default runtime/library health audit.
 - Records a directory disposition summary showing recorded source directories, excluded directories with reasons, and skipped non-source directories.
@@ -65,6 +67,14 @@ Check generated project-maintainer artifacts for oversized files:
 ```bash
 python skills/project-maintainer/scripts/check_doc_sizes.py <repo-root>/.doc_project_maintainer
 ```
+
+Generate an audit visualization report for a maintained project:
+
+```bash
+python skills/project-maintainer/scripts/render_audit_report.py <repo-root>
+```
+
+The output defaults to `<repo-root>/.doc_project_maintainer/project/audit-report.html`. If inventory, coverage maps, symbol audit maps, or integrity reports are refreshed afterward, regenerate the HTML because the report reflects older data.
 
 The packaged skill archive is available at `skills/project-maintainer.zip`.
 
