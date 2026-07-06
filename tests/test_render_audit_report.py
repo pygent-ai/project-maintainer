@@ -234,6 +234,41 @@ class AuditReportRenderingTests(unittest.TestCase):
             self.assertIn('"trustResult": "unverified"', html)
             self.assertIn('"fresh": false', html)
 
+    def test_priority_view_and_overview_metrics_include_risk_and_pending_states(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            write_project_maps(project)
+            audit_path = project / ".doc_project_maintainer" / "project" / "symbol-audit-map.json"
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            audit["symbols"].append(
+                {
+                    "id": "app/server.py::function::stale_handler",
+                    "symbol": "stale_handler",
+                    "name": "stale_handler",
+                    "kind": "function",
+                    "source": "app/server.py",
+                    "source_role": "runtime_source",
+                    "audit_scope": "default_health_audit",
+                    "location": {"line": 30, "end_line": 32},
+                    "audit": {"status": "audit_expired", "confidence": "confirmed"},
+                    "health": {"overall": "risky"},
+                    "issues": [],
+                    "docs": {"entry_doc": "code/app/server.py/stale_handler.md"},
+                }
+            )
+            write_json(audit_path, audit)
+            output = project / ".doc_project_maintainer" / "project" / "audit-report.html"
+
+            result = run_report(project, "--output", str(output))
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            html = output.read_text(encoding="utf-8")
+            self.assertIn('"highRisk"', html)
+            self.assertIn('"pending"', html)
+            self.assertIn('"priorityItems"', html)
+            self.assertLess(html.index("handle_request"), html.index("stale_handler"))
+            self.assertIn("Missing failure-path coverage", html)
+
 
 if __name__ == "__main__":
     unittest.main()

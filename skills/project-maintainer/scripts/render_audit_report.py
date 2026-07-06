@@ -15,6 +15,8 @@ from typing import Any
 DEFAULT_ARTIFACT_ROOT = ".doc_project_maintainer"
 DEFAULT_SCOPE = "default_health_audit"
 ALL_SCOPE = "all"
+SEVERITY_SCORE = {"critical": 900, "high": 800, "medium": 500, "low": 200}
+HEALTH_RISK_VALUES = {"risky", "weak", "high", "poor", "unsafe", "missing"}
 
 
 class AuditReportError(Exception):
@@ -68,12 +70,86 @@ def open_issues(symbol: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def issue_severity(issue: dict[str, Any]) -> str:
+    return str(issue.get("severity") or "unknown").lower()
+
+
+def health_overall(item: dict[str, Any]) -> str:
+    health = item.get("health") if isinstance(item.get("health"), dict) else {}
+    return str(health.get("overall") or "unknown").lower()
+
+
+def priority_score(item: dict[str, Any]) -> int:
+    codes = {str(code) for code in item.get("resultCodes", [])}
+    trust = str(item.get("trustResult") or "")
+    status = str(item.get("auditStatus") or "")
+    score = 0
+    if "integrity_mismatch" in codes or "unsigned_agent_audit" in codes or trust == "invalid_agent_audit":
+        score = max(score, 1000)
+    if "suspicious_batch_signature_reuse" in codes or trust == "suspicious_agent_audit":
+        score = max(score, 900)
+    for issue in item.get("issues", []):
+        if isinstance(issue, dict):
+            score = max(score, SEVERITY_SCORE.get(issue_severity(issue), 0))
+    if status == "audit_expired":
+        score = max(score, 700)
+    if status == "unaudited":
+        score = max(score, 650)
+    if status == "script_assessed" or trust == "provisional_agent_audit":
+        score = max(score, 600)
+    if health_overall(item) in HEALTH_RISK_VALUES:
+        score = max(score, 450)
+    return score
+
+
+def risk_level(score: int) -> str:
+    if score >= 700:
+        return "high"
+    if score >= 450:
+        return "medium"
+    if score > 0:
+        return "low"
+    return "none"
+
+
+def danger_reason(item: dict[str, Any]) -> str:
+    if item.get("resultCodes"):
+        return "Trust verification reported: " + ", ".join(str(code) for code in item["resultCodes"])
+    if item.get("issues"):
+        first = item["issues"][0]
+        return str(first.get("evidence") or first.get("summary") or "Open issue recorded")
+    if item.get("auditStatus") == "audit_expired":
+        return "Audit source hash changed after review"
+    if item.get("auditStatus") == "unaudited":
+        return "Symbol has not been audited"
+    if item.get("auditStatus") == "script_assessed":
+        return "Only script processing exists; no trusted agent or human audit"
+    return "No open risk reason recorded"
+
+
+def suggested_action(item: dict[str, Any]) -> str:
+    if item.get("issues"):
+        first = item["issues"][0]
+        action = first.get("suggested_action")
+        if action:
+            return str(action)
+    if item.get("trustResult") in {"invalid_agent_audit", "suspicious_agent_audit"}:
+        return "Rerun or review the affected audit through the controlled integrity workflow"
+    if item.get("auditStatus") == "audit_expired":
+        return "Refresh symbol docs and rerun the audit for the changed source"
+    if item.get("auditStatus") == "unaudited":
+        return "Assign a symbol audit or mark the symbol out of scope with a reason"
+    if item.get("auditStatus") == "script_assessed":
+        return "Perform a real agent or human audit before treating this as closure"
+    return "No immediate action recorded"
+
+
 def normalize_symbol(symbol: dict[str, Any], integrity_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
     symbol_id = str(symbol.get("id") or "")
     location = symbol.get("location") if isinstance(symbol.get("location"), dict) else {}
     docs = symbol.get("docs") if isinstance(symbol.get("docs"), dict) else {}
     trust = integrity_by_id.get(symbol_id, {})
-    return {
+    item = {
         "id": symbol_id,
         "name": str(symbol.get("name") or symbol.get("symbol") or symbol_id),
         "symbol": str(symbol.get("symbol") or symbol.get("name") or symbol_id),
@@ -92,6 +168,12 @@ def normalize_symbol(symbol: dict[str, Any], integrity_by_id: dict[str, dict[str
         "closureEligible": bool(trust.get("closure_eligible")) if trust else False,
         "resultCodes": trust.get("result_codes") if isinstance(trust.get("result_codes"), list) else [],
     }
+    score = priority_score(item)
+    item["priorityScore"] = score
+    item["riskLevel"] = risk_level(score)
+    item["dangerReason"] = danger_reason(item)
+    item["suggestedAction"] = suggested_action(item)
+    return item
 
 
 def build_integrity_lookup(integrity_report: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
@@ -179,6 +261,48 @@ def run_integrity_report(args: argparse.Namespace, paths: dict[str, Path]) -> tu
     }
 
 
+def in_scope(symbol: dict[str, Any], scope: str) -> bool:
+    return scope == ALL_SCOPE or symbol.get("auditScope") == scope
+
+
+def overview_for_scope(symbols: list[dict[str, Any]], scope: str) -> dict[str, Any]:
+    scoped = [item for item in symbols if in_scope(item, scope)]
+    audited = [
+        item
+        for item in scoped
+        if item.get("auditStatus") in {"agent_audited", "human_audited", "out_of_scope"}
+    ]
+    pending = [item for item in scoped if not item.get("closureEligible")]
+    risk_counts = {"high": 0, "medium": 0, "low": 0, "none": 0}
+    health_counts: dict[str, int] = {}
+    issue_dimensions: dict[str, int] = {}
+    for item in scoped:
+        risk_counts[str(item.get("riskLevel") or "none")] += 1
+        overall = health_overall(item)
+        health_counts[overall] = health_counts.get(overall, 0) + 1
+        for issue in item.get("issues", []):
+            dimension = str(issue.get("dimension") or "unknown")
+            issue_dimensions[dimension] = issue_dimensions.get(dimension, 0) + 1
+    coverage = round((len(audited) / len(scoped)) * 100, 1) if scoped else 0.0
+    return {
+        "scope": scope,
+        "symbols": len(scoped),
+        "audited": len(audited),
+        "unaudited": sum(1 for item in scoped if item.get("auditStatus") == "unaudited"),
+        "scriptAssessed": sum(1 for item in scoped if item.get("auditStatus") == "script_assessed"),
+        "auditExpired": sum(1 for item in scoped if item.get("auditStatus") == "audit_expired"),
+        "closureEligible": sum(1 for item in scoped if item.get("closureEligible")),
+        "pending": len(pending),
+        "highRisk": risk_counts["high"],
+        "mediumRisk": risk_counts["medium"],
+        "lowRisk": risk_counts["low"],
+        "riskCounts": risk_counts,
+        "healthCounts": health_counts,
+        "topIssueDimensions": sorted(issue_dimensions.items(), key=lambda pair: (-pair[1], pair[0]))[:5],
+        "coveragePercent": coverage,
+    }
+
+
 def build_report_model(
     *,
     coverage_map: dict[str, Any],
@@ -194,11 +318,20 @@ def build_report_model(
         for symbol in audit_map.get("symbols", [])
         if isinstance(symbol, dict)
     ]
+    priority_items = sorted(
+        [item for item in symbols if item["priorityScore"] > 0],
+        key=lambda item: (-item["priorityScore"], item["source"], item["name"]),
+    )
     return {
         "schema": "project-maintainer.audit-visual-report.v1",
         "generatedAt": generated_at,
         "defaultScope": default_scope,
         "scopes": [{"scope": DEFAULT_SCOPE}, {"scope": ALL_SCOPE}],
+        "overview": {
+            DEFAULT_SCOPE: overview_for_scope(symbols, DEFAULT_SCOPE),
+            ALL_SCOPE: overview_for_scope(symbols, ALL_SCOPE),
+        },
+        "priorityItems": priority_items[:50],
         "status": {
             "coverageGeneratedAt": coverage_map.get("generated_at"),
             "auditGeneratedAt": audit_map.get("generated_at"),
@@ -242,6 +375,11 @@ def render_html(model: dict[str, Any]) -> str:
         "    th, td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; vertical-align: top; }\n"
         "    code { font-family: Consolas, 'Courier New', monospace; font-size: 13px; }\n"
         "    .status.warning { color: #991b1b; font-weight: 700; }\n"
+        "    .priority-list { display: grid; gap: 10px; }\n"
+        "    .priority-list article { border-left: 4px solid var(--line); padding: 10px 12px; background: #fbfcfd; }\n"
+        "    .risk-high { color: #991b1b; }\n"
+        "    .risk-medium { color: #9a5b00; }\n"
+        "    .risk-low { color: #2f5d50; }\n"
         "  </style>\n"
         "</head>\n"
         "<body>\n"
@@ -252,6 +390,7 @@ def render_html(model: dict[str, Any]) -> str:
         "  <main>\n"
         "    <div class=\"toolbar\"><label>Scope <select id=\"scopeSelect\"><option value=\"default_health_audit\">Default health audit</option><option value=\"all\">All symbols</option></select></label></div>\n"
         "    <section><h2>Overview</h2><div id=\"dashboard\" class=\"dashboard\"></div></section>\n"
+        "    <section><h2>Priority View</h2><div id=\"priority\" class=\"priority-list\"></div></section>\n"
         "    <section><h2>Audit Items</h2><table id=\"detailsTable\"></table></section>\n"
         "  </main>\n"
         "  <script>\n"
@@ -261,15 +400,30 @@ def render_html(model: dict[str, Any]) -> str:
         "      return report.symbols.filter(item => scope === 'all' || item.auditScope === scope);\n"
         "    }\n"
         "    function renderDashboard() {\n"
-        "      const rows = activeSymbols();\n"
-        "      const audited = rows.filter(item => ['agent_audited','human_audited','out_of_scope'].includes(item.auditStatus)).length;\n"
-        "      const unaudited = rows.filter(item => item.auditStatus === 'unaudited').length;\n"
-        "      document.getElementById('dashboard').innerHTML = [['Symbols', rows.length], ['Audited', audited], ['Unaudited', unaudited], ['Open issues', rows.reduce((sum, item) => sum + item.issues.length, 0)]].map(([label, value]) => '<div class=\"metric\"><span>' + label + '</span><strong>' + value + '</strong></div>').join('');\n"
+        "      const scope = document.getElementById('scopeSelect').value;\n"
+        "      const overview = report.overview[scope];\n"
+        "      document.getElementById('dashboard').innerHTML = [\n"
+        "        ['Audited', overview.audited],\n"
+        "        ['Unaudited', overview.unaudited],\n"
+        "        ['Pending', overview.pending],\n"
+        "        ['Closure eligible', overview.closureEligible],\n"
+        "        ['High risk', overview.highRisk],\n"
+        "        ['Coverage', overview.coveragePercent + '%']\n"
+        "      ].map(([label, value]) => '<div class=\"metric\"><span>' + label + '</span><strong>' + value + '</strong></div>').join('');\n"
+        "    }\n"
+        "    function renderPriority() {\n"
+        "      const scope = document.getElementById('scopeSelect').value;\n"
+        "      const items = report.priorityItems.filter(item => scope === 'all' || item.auditScope === scope).slice(0, 10);\n"
+        "      document.getElementById('priority').innerHTML = items.map(item =>\n"
+        "        '<article><strong class=\"risk-' + item.riskLevel + '\">' + item.riskLevel.toUpperCase() + '</strong> ' +\n"
+        "        item.name + ' <code>' + item.source + ':' + (item.line || '') + '</code><br>' +\n"
+        "        '<span>' + item.dangerReason + '</span><br><em>' + item.suggestedAction + '</em></article>'\n"
+        "      ).join('') || '<p>No prioritized risks recorded for this scope.</p>';\n"
         "    }\n"
         "    function renderTable() {\n"
-        "      document.getElementById('detailsTable').innerHTML = '<tr><th>Name</th><th>Source</th><th>Status</th><th>Health</th></tr>' + activeSymbols().map(item => '<tr><td>' + item.name + '<br><small>' + item.kind + '</small></td><td><code>' + item.source + ':' + (item.line || '') + '</code></td><td>' + item.auditStatus + '<br><small>' + item.trustResult + '</small></td><td>' + (item.health.overall || 'unknown') + '</td></tr>').join('');\n"
+        "      document.getElementById('detailsTable').innerHTML = '<tr><th>Name</th><th>Source</th><th>Status</th><th>Risk</th><th>Health</th></tr>' + activeSymbols().map(item => '<tr><td>' + item.name + '<br><small>' + item.kind + '</small></td><td><code>' + item.source + ':' + (item.line || '') + '</code></td><td>' + item.auditStatus + '<br><small>' + item.trustResult + '</small></td><td class=\"risk-' + item.riskLevel + '\">' + item.riskLevel + '</td><td>' + (item.health.overall || 'unknown') + '</td></tr>').join('');\n"
         "    }\n"
-        "    function render() { renderDashboard(); renderTable(); }\n"
+        "    function render() { renderDashboard(); renderPriority(); renderTable(); }\n"
         "    document.getElementById('scopeSelect').value = report.defaultScope;\n"
         "    document.getElementById('scopeSelect').addEventListener('input', render);\n"
         "    const statusEl = document.getElementById('statusLine');\n"
