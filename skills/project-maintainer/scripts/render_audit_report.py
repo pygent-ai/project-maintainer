@@ -7,6 +7,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -102,6 +103,82 @@ def build_integrity_lookup(integrity_report: dict[str, Any] | None) -> dict[str,
     return {str(item.get("id")): item for item in records if isinstance(item, dict) and item.get("id")}
 
 
+def run_integrity_report(args: argparse.Namespace, paths: dict[str, Path]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    if args.skip_integrity_refresh:
+        return None, {
+            "fresh": False,
+            "status": "skipped",
+            "generatedAt": None,
+            "message": "Integrity refresh skipped",
+            "command": None,
+            "reportPath": str(paths["integrity_report"]),
+        }
+
+    script = Path(__file__).resolve().with_name("audit_integrity.py")
+    command = [
+        sys.executable,
+        str(script),
+        "report",
+        "--repo-root",
+        str(paths["repo_root"]),
+        "--audit-map",
+        str(paths["audit_map"]),
+        "--scope",
+        ALL_SCOPE,
+        "--report-output",
+        str(paths["integrity_report"]),
+        "--signing-key-env",
+        args.signing_key_env,
+        "--batch-reuse-threshold",
+        str(args.batch_reuse_threshold),
+    ]
+    result = subprocess.run(
+        command,
+        cwd=paths["repo_root"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None, {
+            "fresh": False,
+            "status": "failed",
+            "generatedAt": utc_now(),
+            "message": "Integrity refresh failed",
+            "command": command,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "reportPath": str(paths["integrity_report"]),
+        }
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return None, {
+            "fresh": False,
+            "status": "failed",
+            "generatedAt": utc_now(),
+            "message": f"Integrity refresh failed: invalid JSON output: {exc}",
+            "command": command,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "reportPath": str(paths["integrity_report"]),
+        }
+    return report, {
+        "fresh": True,
+        "status": "fresh",
+        "generatedAt": utc_now(),
+        "message": "Integrity refresh succeeded",
+        "command": command,
+        "reportPath": str(paths["integrity_report"]),
+        "summary": {
+            "records": report.get("records"),
+            "closure": report.get("closure"),
+            "agentAuditTrustCounts": report.get("agent_audit_trust_counts"),
+            "resultCounts": report.get("result_counts"),
+        },
+    }
+
+
 def build_report_model(
     *,
     coverage_map: dict[str, Any],
@@ -164,12 +241,13 @@ def render_html(model: dict[str, Any]) -> str:
         "    table { width: 100%; border-collapse: collapse; background: var(--panel); }\n"
         "    th, td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; vertical-align: top; }\n"
         "    code { font-family: Consolas, 'Courier New', monospace; font-size: 13px; }\n"
+        "    .status.warning { color: #991b1b; font-weight: 700; }\n"
         "  </style>\n"
         "</head>\n"
         "<body>\n"
         "  <header>\n"
         "    <h1>Project Maintainer Audit Report</h1>\n"
-        "    <p id=\"statusLine\"></p>\n"
+        "    <p id=\"statusLine\" class=\"status\"></p>\n"
         "  </header>\n"
         "  <main>\n"
         "    <div class=\"toolbar\"><label>Scope <select id=\"scopeSelect\"><option value=\"default_health_audit\">Default health audit</option><option value=\"all\">All symbols</option></select></label></div>\n"
@@ -194,7 +272,9 @@ def render_html(model: dict[str, Any]) -> str:
         "    function render() { renderDashboard(); renderTable(); }\n"
         "    document.getElementById('scopeSelect').value = report.defaultScope;\n"
         "    document.getElementById('scopeSelect').addEventListener('input', render);\n"
-        "    document.getElementById('statusLine').textContent = 'Generated ' + report.generatedAt + ' from coverage ' + (report.status.coverageGeneratedAt || 'unknown') + ' and audit ' + (report.status.auditGeneratedAt || 'unknown') + '.';\n"
+        "    const statusEl = document.getElementById('statusLine');\n"
+        "    statusEl.className = 'status' + (report.status.integrity.status === 'failed' ? ' warning' : '');\n"
+        "    statusEl.textContent = 'Generated ' + report.generatedAt + ' | Integrity: ' + report.status.integrity.message;\n"
         "    render();\n"
         "  </script>\n"
         "</body>\n"
@@ -206,15 +286,11 @@ def generate_report(args: argparse.Namespace) -> Path:
     paths = resolve_paths(args)
     coverage_map = read_json(paths["coverage_map"], "coverage-map.json")
     audit_map = read_json(paths["audit_map"], "symbol-audit-map.json")
-    integrity_state = {
-        "status": "skipped" if args.skip_integrity_refresh else "not_refreshed",
-        "fresh": False,
-        "reportPath": str(paths["integrity_report"]),
-    }
+    integrity_report, integrity_state = run_integrity_report(args, paths)
     model = build_report_model(
         coverage_map=coverage_map,
         audit_map=audit_map,
-        integrity_report=None,
+        integrity_report=integrity_report,
         integrity_state=integrity_state,
         default_scope=args.scope,
         generated_at=utc_now(),

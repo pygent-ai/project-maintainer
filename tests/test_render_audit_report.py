@@ -203,6 +203,37 @@ class AuditReportRenderingTests(unittest.TestCase):
             self.assertNotIn("<script src=", html)
             self.assertNotIn("<link rel=", html)
 
+    def test_refreshes_integrity_report_and_merges_trust_details(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            write_project_maps(project)
+            output = project / ".doc_project_maintainer" / "project" / "audit-report.html"
+            integrity_output = project / ".doc_project_maintainer" / "project" / "audit-integrity-report.json"
+
+            result = run_report(project, "--output", str(output), "--integrity-report-output", str(integrity_output))
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(integrity_output.exists())
+            report = json.loads(integrity_output.read_text(encoding="utf-8"))
+            self.assertEqual(report["records"], 2)
+            html = output.read_text(encoding="utf-8")
+            self.assertIn('"fresh": true', html)
+            self.assertIn("unsigned_agent_audit", html)
+
+    def test_integrity_refresh_failure_marks_report_unverified(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            write_project_maps(project)
+            output = project / ".doc_project_maintainer" / "project" / "audit-report.html"
+
+            result = run_report(project, "--output", str(output), key=None)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            html = output.read_text(encoding="utf-8")
+            self.assertIn("Integrity refresh failed", html)
+            self.assertIn('"trustResult": "unverified"', html)
+            self.assertIn('"fresh": false', html)
+
 
 if __name__ == "__main__":
     unittest.main()
