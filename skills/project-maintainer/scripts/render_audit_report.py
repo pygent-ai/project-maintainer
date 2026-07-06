@@ -303,6 +303,18 @@ def overview_for_scope(symbols: list[dict[str, Any]], scope: str) -> dict[str, A
     }
 
 
+def build_scope_tree(symbols: list[dict[str, Any]]) -> dict[str, Any]:
+    root: dict[str, Any] = {"name": ".", "kind": "root", "children": {}, "symbols": []}
+    for item in symbols:
+        path_parts = str(item.get("source") or "unknown").split("/")
+        node = root
+        for part in path_parts:
+            children = node.setdefault("children", {})
+            node = children.setdefault(part, {"name": part, "kind": "path", "children": {}, "symbols": []})
+        node.setdefault("symbols", []).append(item["id"])
+    return root
+
+
 def build_report_model(
     *,
     coverage_map: dict[str, Any],
@@ -332,6 +344,7 @@ def build_report_model(
             ALL_SCOPE: overview_for_scope(symbols, ALL_SCOPE),
         },
         "priorityItems": priority_items[:50],
+        "scopeTree": build_scope_tree(symbols),
         "status": {
             "coverageGeneratedAt": coverage_map.get("generated_at"),
             "auditGeneratedAt": audit_map.get("generated_at"),
@@ -349,8 +362,17 @@ def build_report_model(
     }
 
 
+def safe_json_for_script(value: Any) -> str:
+    return (
+        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+
+
 def render_html(model: dict[str, Any]) -> str:
-    data = json.dumps(model, indent=2, sort_keys=True, ensure_ascii=False)
+    data = safe_json_for_script(model)
     return (
         "<!doctype html>\n"
         "<html lang=\"en\">\n"
@@ -366,7 +388,8 @@ def render_html(model: dict[str, Any]) -> str:
         "    h1 { margin: 0 0 8px; font-size: clamp(30px, 5vw, 54px); line-height: 1; letter-spacing: 0; }\n"
         "    main { width: min(1200px, calc(100% - 32px)); margin: 24px auto 48px; }\n"
         "    .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 18px; }\n"
-        "    select { min-height: 40px; border: 1px solid var(--line); background: white; padding: 0 12px; }\n"
+        "    input, select { min-height: 40px; border: 1px solid var(--line); background: white; padding: 0 12px; }\n"
+        "    input { min-width: min(320px, 100%); }\n"
         "    .dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }\n"
         "    .metric, section { border: 1px solid var(--line); background: var(--panel); padding: 16px; }\n"
         "    .metric span { display: block; color: var(--muted); font-size: 13px; }\n"
@@ -380,6 +403,9 @@ def render_html(model: dict[str, Any]) -> str:
         "    .risk-high { color: #991b1b; }\n"
         "    .risk-medium { color: #9a5b00; }\n"
         "    .risk-low { color: #2f5d50; }\n"
+        "    #scopeTree ul { margin: 6px 0 6px 18px; padding: 0; }\n"
+        "    #scopeTree li { margin: 4px 0; }\n"
+        "    th[onclick] { cursor: pointer; }\n"
         "  </style>\n"
         "</head>\n"
         "<body>\n"
@@ -388,19 +414,32 @@ def render_html(model: dict[str, Any]) -> str:
         "    <p id=\"statusLine\" class=\"status\"></p>\n"
         "  </header>\n"
         "  <main>\n"
-        "    <div class=\"toolbar\"><label>Scope <select id=\"scopeSelect\"><option value=\"default_health_audit\">Default health audit</option><option value=\"all\">All symbols</option></select></label></div>\n"
+        "    <div class=\"toolbar\"><label>Scope <select id=\"scopeSelect\"><option value=\"default_health_audit\">Default health audit</option><option value=\"all\">All symbols</option></select></label><input id=\"searchInput\" type=\"search\" placeholder=\"Search symbol, class, file\"><select id=\"riskFilter\"><option value=\"\">All risks</option><option value=\"high\">High risk</option><option value=\"medium\">Medium risk</option><option value=\"low\">Low risk</option><option value=\"none\">No risk</option></select><select id=\"statusFilter\"></select></div>\n"
         "    <section><h2>Overview</h2><div id=\"dashboard\" class=\"dashboard\"></div></section>\n"
         "    <section><h2>Priority View</h2><div id=\"priority\" class=\"priority-list\"></div></section>\n"
+        "    <section><h2>Scope View</h2><div id=\"scopeTree\"></div></section>\n"
         "    <section><h2>Audit Items</h2><table id=\"detailsTable\"></table></section>\n"
         "  </main>\n"
         "  <script>\n"
         f"    const report = {data};\n"
+        "    let currentSort = 'priorityScore';\n"
+        "    let sortDescending = true;\n"
+        "    function escapeHtml(value) {\n"
+        "      return String(value ?? '').replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[ch]));\n"
+        "    }\n"
+        "    function activeScope() {\n"
+        "      return document.getElementById('scopeSelect').value;\n"
+        "    }\n"
         "    function activeSymbols() {\n"
-        "      const scope = document.getElementById('scopeSelect').value;\n"
+        "      const scope = activeScope();\n"
         "      return report.symbols.filter(item => scope === 'all' || item.auditScope === scope);\n"
         "    }\n"
+        "    function populateStatusFilter() {\n"
+        "      const statuses = Array.from(new Set(report.symbols.map(item => item.auditStatus))).sort();\n"
+        "      document.getElementById('statusFilter').innerHTML = '<option value=\"\">All statuses</option>' + statuses.map(status => '<option value=\"' + escapeHtml(status) + '\">' + escapeHtml(status) + '</option>').join('');\n"
+        "    }\n"
         "    function renderDashboard() {\n"
-        "      const scope = document.getElementById('scopeSelect').value;\n"
+        "      const scope = activeScope();\n"
         "      const overview = report.overview[scope];\n"
         "      document.getElementById('dashboard').innerHTML = [\n"
         "        ['Audited', overview.audited],\n"
@@ -412,24 +451,58 @@ def render_html(model: dict[str, Any]) -> str:
         "      ].map(([label, value]) => '<div class=\"metric\"><span>' + label + '</span><strong>' + value + '</strong></div>').join('');\n"
         "    }\n"
         "    function renderPriority() {\n"
-        "      const scope = document.getElementById('scopeSelect').value;\n"
+        "      const scope = activeScope();\n"
         "      const items = report.priorityItems.filter(item => scope === 'all' || item.auditScope === scope).slice(0, 10);\n"
         "      document.getElementById('priority').innerHTML = items.map(item =>\n"
-        "        '<article><strong class=\"risk-' + item.riskLevel + '\">' + item.riskLevel.toUpperCase() + '</strong> ' +\n"
-        "        item.name + ' <code>' + item.source + ':' + (item.line || '') + '</code><br>' +\n"
-        "        '<span>' + item.dangerReason + '</span><br><em>' + item.suggestedAction + '</em></article>'\n"
+        "        '<article><strong class=\"risk-' + escapeHtml(item.riskLevel) + '\">' + escapeHtml(item.riskLevel.toUpperCase()) + '</strong> ' +\n"
+        "        escapeHtml(item.name) + ' <code>' + escapeHtml(item.source) + ':' + escapeHtml(item.line || '') + '</code><br>' +\n"
+        "        '<span>' + escapeHtml(item.dangerReason) + '</span><br><em>' + escapeHtml(item.suggestedAction) + '</em></article>'\n"
         "      ).join('') || '<p>No prioritized risks recorded for this scope.</p>';\n"
         "    }\n"
-        "    function renderTable() {\n"
-        "      document.getElementById('detailsTable').innerHTML = '<tr><th>Name</th><th>Source</th><th>Status</th><th>Risk</th><th>Health</th></tr>' + activeSymbols().map(item => '<tr><td>' + item.name + '<br><small>' + item.kind + '</small></td><td><code>' + item.source + ':' + (item.line || '') + '</code></td><td>' + item.auditStatus + '<br><small>' + item.trustResult + '</small></td><td class=\"risk-' + item.riskLevel + '\">' + item.riskLevel + '</td><td>' + (item.health.overall || 'unknown') + '</td></tr>').join('');\n"
+        "    function applyFilters() {\n"
+        "      const query = document.getElementById('searchInput').value.toLowerCase();\n"
+        "      const risk = document.getElementById('riskFilter').value;\n"
+        "      const status = document.getElementById('statusFilter').value;\n"
+        "      let rows = activeSymbols().filter(item => {\n"
+        "        const haystack = [item.name, item.symbol, item.className, item.source, item.kind].join(' ').toLowerCase();\n"
+        "        return (!query || haystack.includes(query)) && (!risk || item.riskLevel === risk) && (!status || item.auditStatus === status);\n"
+        "      });\n"
+        "      rows.sort((a, b) => {\n"
+        "        const left = a[currentSort] ?? '';\n"
+        "        const right = b[currentSort] ?? '';\n"
+        "        if (left < right) return sortDescending ? 1 : -1;\n"
+        "        if (left > right) return sortDescending ? -1 : 1;\n"
+        "        return a.name.localeCompare(b.name);\n"
+        "      });\n"
+        "      renderTable(rows);\n"
+        "      renderDashboard();\n"
+        "      renderPriority();\n"
         "    }\n"
-        "    function render() { renderDashboard(); renderPriority(); renderTable(); }\n"
+        "    function sortBy(field) {\n"
+        "      if (currentSort === field) sortDescending = !sortDescending;\n"
+        "      else { currentSort = field; sortDescending = field === 'priorityScore'; }\n"
+        "      applyFilters();\n"
+        "    }\n"
+        "    function renderTable(rows) {\n"
+        "      document.getElementById('detailsTable').innerHTML = '<tr><th onclick=\"sortBy(\\'name\\')\">Name</th><th onclick=\"sortBy(\\'source\\')\">Source</th><th onclick=\"sortBy(\\'auditStatus\\')\">Status</th><th onclick=\"sortBy(\\'riskLevel\\')\">Risk</th><th>Action</th></tr>' + rows.map(item => '<tr><td>' + escapeHtml(item.name) + '<br><small>' + escapeHtml(item.kind) + '</small></td><td><code>' + escapeHtml(item.source) + ':' + escapeHtml(item.line || '') + '</code></td><td>' + escapeHtml(item.auditStatus) + '<br><small>' + escapeHtml(item.trustResult) + '</small></td><td class=\"risk-' + escapeHtml(item.riskLevel) + '\">' + escapeHtml(item.riskLevel) + '</td><td>' + escapeHtml(item.suggestedAction) + '</td></tr>').join('');\n"
+        "    }\n"
+        "    function renderScopeTreeNode(node) {\n"
+        "      const children = Object.values(node.children || {});\n"
+        "      const symbolCount = (node.symbols || []).length;\n"
+        "      return '<li>' + escapeHtml(node.name) + (symbolCount ? ' <small>(' + symbolCount + ' symbols)</small>' : '') + (children.length ? '<ul>' + children.map(renderScopeTreeNode).join('') + '</ul>' : '') + '</li>';\n"
+        "    }\n"
+        "    function renderScopeTree() {\n"
+        "      document.getElementById('scopeTree').innerHTML = '<ul>' + renderScopeTreeNode(report.scopeTree) + '</ul>';\n"
+        "    }\n"
+        "    function render() { applyFilters(); }\n"
+        "    populateStatusFilter();\n"
+        "    renderScopeTree();\n"
         "    document.getElementById('scopeSelect').value = report.defaultScope;\n"
-        "    document.getElementById('scopeSelect').addEventListener('input', render);\n"
+        "    ['scopeSelect','riskFilter','statusFilter','searchInput'].forEach(id => document.getElementById(id).addEventListener('input', applyFilters));\n"
         "    const statusEl = document.getElementById('statusLine');\n"
         "    statusEl.className = 'status' + (report.status.integrity.status === 'failed' ? ' warning' : '');\n"
         "    statusEl.textContent = 'Generated ' + report.generatedAt + ' | Integrity: ' + report.status.integrity.message;\n"
-        "    render();\n"
+        "    applyFilters();\n"
         "  </script>\n"
         "</body>\n"
         "</html>\n"

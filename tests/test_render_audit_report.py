@@ -269,6 +269,31 @@ class AuditReportRenderingTests(unittest.TestCase):
             self.assertLess(html.index("handle_request"), html.index("stale_handler"))
             self.assertIn("Missing failure-path coverage", html)
 
+    def test_report_embeds_filter_controls_scope_tree_and_escaped_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            write_project_maps(project)
+            audit_path = project / ".doc_project_maintainer" / "project" / "symbol-audit-map.json"
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            audit["symbols"][0]["name"] = "<script>alert('x')</script>"
+            audit["symbols"][0]["issues"][0]["summary"] = "<b>unsafe</b>"
+            write_json(audit_path, audit)
+            output = project / ".doc_project_maintainer" / "project" / "audit-report.html"
+
+            result = run_report(project, "--output", str(output), "--skip-integrity-refresh")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            html = output.read_text(encoding="utf-8")
+            self.assertIn("id=\"searchInput\"", html)
+            self.assertIn("id=\"riskFilter\"", html)
+            self.assertIn("id=\"statusFilter\"", html)
+            self.assertIn("id=\"scopeTree\"", html)
+            self.assertIn("function applyFilters()", html)
+            self.assertIn("function sortBy(field)", html)
+            self.assertIn("\\u003cscript\\u003ealert", html)
+            self.assertNotIn("<script>alert('x')</script>", html)
+            self.assertNotIn("<b>unsafe</b>", html)
+
 
 if __name__ == "__main__":
     unittest.main()
