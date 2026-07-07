@@ -28,7 +28,7 @@ skills/
 
 ## Version
 
-Current version: `0.0.9`
+Current version: `0.0.10`
 
 ## What The Skill Does
 
