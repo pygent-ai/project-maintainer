@@ -117,7 +117,7 @@ These parameters identify what the script should operate on:
 
 These identify signer or verification behavior:
 
-- `--signing-key-env`: environment variable name containing the HMAC signing secret. Default: `PROJECT_MAINTAINER_AUDIT_SIGNING_KEY`.
+- `--signing-key-env`: environment variable name containing the HMAC signing secret. Default: `PROJECT_MAINTAINER_AUDIT_SIGNING_KEY`. Preflight can run `audit_integrity.py ensure-key --repo-root <repo-root>` to create `.doc_project_maintainer/project/audit-signing-key.json`; if the environment variable is absent, promote, verify, and report commands load that artifact-local key.
 - `--key-id`: stable label for the signing secret, used for rotation and reporting.
 - `--public-key`: reserved for a future Ed25519 verification mode; not required for v1 HMAC verification.
 - `--strict`: optional mode that turns warnings into non-zero exits for CI.
@@ -369,6 +369,8 @@ Rules:
 ## Supporting Audit Evidence
 
 The agent call fingerprint batch is required for provisional promotion, but it is not audit evidence by itself. It makes the promotion traceable and comparable during full verification.
+
+The artifact-local signing key exists to keep controlled agent workflow integrity stable across Project Maintainer tasks. It is stored with the artifact and is not a tamper-proof security boundary; a user or process with artifact write access can read the key and re-sign records.
 
 Audit evidence fields may still be recorded to make the health judgment easier to review:
 

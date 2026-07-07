@@ -225,6 +225,17 @@ class AuditReportRenderingTests(unittest.TestCase):
             project = Path(temp_dir)
             write_project_maps(project)
             output = project / ".doc_project_maintainer" / "project" / "audit-report.html"
+            key_output = project / ".doc_project_maintainer" / "project" / "audit-signing-key.json"
+            write(
+                key_output,
+                """
+                {
+                  "schema": "unsupported",
+                  "algorithm": "hmac-sha256",
+                  "secret": "bad-key"
+                }
+                """,
+            )
 
             result = run_report(project, "--output", str(output), key=None)
 
@@ -233,6 +244,25 @@ class AuditReportRenderingTests(unittest.TestCase):
             self.assertIn("Integrity refresh failed", html)
             self.assertIn('"trustResult": "unverified"', html)
             self.assertIn('"fresh": false', html)
+
+    def test_integrity_refresh_without_env_uses_artifact_local_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            write_project_maps(project)
+            output = project / ".doc_project_maintainer" / "project" / "audit-report.html"
+            integrity_output = project / ".doc_project_maintainer" / "project" / "audit-integrity-report.json"
+            key_output = project / ".doc_project_maintainer" / "project" / "audit-signing-key.json"
+
+            result = run_report(project, "--output", str(output), "--integrity-report-output", str(integrity_output), key=None)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(key_output.exists())
+            self.assertTrue(integrity_output.exists())
+            report = json.loads(integrity_output.read_text(encoding="utf-8"))
+            self.assertEqual(report["records"], 2)
+            html = output.read_text(encoding="utf-8")
+            self.assertIn('"fresh": true', html)
+            self.assertIn("unsigned_agent_audit", html)
 
     def test_priority_view_and_overview_metrics_include_risk_and_pending_states(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

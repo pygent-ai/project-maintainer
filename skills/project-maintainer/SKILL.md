@@ -54,14 +54,20 @@ Use preflight to decide what artifact exists, whether it can be trusted for the 
 
 1. Identify the target repository root.
 2. Check whether `.doc_project_maintainer/` already exists.
-3. If the artifact exists, read `.doc_project_maintainer/INDEX.md`, `.doc_project_maintainer/manifest.yaml`, `.doc_project_maintainer/project/build-plan.md`, `.doc_project_maintainer/project/coverage-map.json`, and `.doc_project_maintainer/project/symbol-audit-map.json` when present.
-4. Assess whether the existing artifact is stale before editing code or docs:
+3. Ensure the artifact-local audit signing key is available whenever `.doc_project_maintainer/` exists or is being created:
+   - Use `.doc_project_maintainer/project/audit-signing-key.json` as the default key record for `PROJECT_MAINTAINER_AUDIT_SIGNING_KEY`.
+   - Run `python <skill-dir>/scripts/audit_integrity.py ensure-key --repo-root <repo-root>` during preflight so first-time artifacts get a key before later audit commands.
+   - If the environment variable is absent, `scripts/audit_integrity.py` loads this artifact key and creates it on first use.
+   - Treat this key as artifact-local agent workflow integrity, not a tamper-proof security boundary. It constrains controlled agent workflows; it does not protect against a user or process that can edit the artifact and rerun signing.
+   - Reuse the existing artifact key for later promote, verify, report, and audit visualization commands unless the user explicitly provides a different signing key environment.
+4. If the artifact exists, read `.doc_project_maintainer/INDEX.md`, `.doc_project_maintainer/manifest.yaml`, `.doc_project_maintainer/project/build-plan.md`, `.doc_project_maintainer/project/coverage-map.json`, and `.doc_project_maintainer/project/symbol-audit-map.json` when present.
+5. Assess whether the existing artifact is stale before editing code or docs:
    - Compare the current task, touched paths, git status, recent commits, and manifest mappings.
    - If the task depends on stale docs, sync the relevant artifact files before relying on them.
    - If stale docs are unrelated to the current task, record or preserve the pending sync state and remind the user at the end.
-5. If starting fresh, create the artifact structure described in `references/artifact-structure.md`.
-6. Load `references/templates.md` before creating or heavily revising artifact files.
-7. Load `references/code-symbol-docs.md` before creating or heavily revising code symbol docs.
+6. If starting fresh, create the artifact structure described in `references/artifact-structure.md`.
+7. Load `references/templates.md` before creating or heavily revising artifact files.
+8. Load `references/code-symbol-docs.md` before creating or heavily revising code symbol docs.
 
 ## Core Workflows
 
@@ -73,7 +79,7 @@ Use this when the project is new or still being designed.
 2. Propose initial modules before detailed files exist.
 3. Map planned directories to modules.
 4. Record early architecture decisions as decision records.
-5. Create `.doc_project_maintainer/README.md`, `INDEX.md`, `manifest.yaml`, project overview, initial module docs, and initial directory docs.
+5. Create `.doc_project_maintainer/README.md`, `INDEX.md`, `manifest.yaml`, project overview, initial module docs, initial directory docs, and the artifact-local audit signing key via `scripts/audit_integrity.py ensure-key`.
 
 ### Explore Existing Project
 
@@ -192,25 +198,27 @@ Use `project/symbol-audit-map.json` as the machine-readable audit ledger for eve
 Use this when the user asks for a human-readable audit summary, visual audit report, dashboard, HTML report, team review artifact, or security-review artifact.
 
 1. Confirm `.doc_project_maintainer/project/coverage-map.json` and `.doc_project_maintainer/project/symbol-audit-map.json` exist. If they are missing or stale for the requested scope, explain that inventory should be refreshed before the report can be trusted.
-2. Run:
+2. Ensure the artifact-local audit signing key is available. If `PROJECT_MAINTAINER_AUDIT_SIGNING_KEY` is unset, the report refresh uses `.doc_project_maintainer/project/audit-signing-key.json` through `audit_integrity.py`.
+3. Run:
    ```bash
    python <skill-dir>/scripts/render_audit_report.py <repo-root>
    ```
-3. The report generator refreshes trust classification with `audit_integrity.py report` unless `--skip-integrity-refresh` is explicitly used.
-4. Treat the generated `project/audit-report.html` as a presentation artifact only. The JSON maps and symbol docs remain the source of truth.
-5. If inventory, coverage maps, symbol audit maps, or audit integrity reports are refreshed after the HTML report is generated, tell the user the report reflects older data and should be regenerated or refreshed in the browser.
+4. The report generator refreshes trust classification with `audit_integrity.py report` unless `--skip-integrity-refresh` is explicitly used.
+5. Treat the generated `project/audit-report.html` as a presentation artifact only. The JSON maps and symbol docs remain the source of truth.
+6. If inventory, coverage maps, symbol audit maps, or audit integrity reports are refreshed after the HTML report is generated, tell the user the report reflects older data and should be regenerated or refreshed in the browser.
 
 ### Agent Symbol Audit Contract
 
 Use this contract before changing any symbol audit status from `unaudited`, `script_assessed`, or `audit_expired` to `agent_audited`.
 
 1. `scripts/inventory_symbols.py` is not an auditor. It may inventory symbols, verify entry docs, preserve matching prior audit records, and expire stale audit records, but it must not mark a symbol `agent_audited` by itself.
-2. Audit status writes must go through `scripts/audit_integrity.py`. The `promote` command may write `script_assessed` for script-only progress or provisional `agent_audited` when a recent agent call signature batch is supplied.
+2. Audit status writes must go through `scripts/audit_integrity.py`. The `promote` command may write `script_assessed` for script-only progress or provisional `agent_audited` when a recent agent call signature batch is supplied. If `PROJECT_MAINTAINER_AUDIT_SIGNING_KEY` is absent, the script loads or creates `.doc_project_maintainer/project/audit-signing-key.json`.
 3. A symbol may become `agent_audited` only after a real audit agent has reviewed that assigned symbol or slice. The audit agent must read the symbol implementation, relevant callers or callees needed to understand behavior, related tests or missing-test evidence, and any linked flow or code symbol docs that affect the health judgment.
 4. The audit agent must record evidence-based health dimensions and issues for the assigned class, top-level function, or class method. Evidence should cite observed behavior, source paths, tests, error handling, state mutation, side effects, contracts, or missing verification.
 5. A coordinator may copy or integrate the audit agent's conclusion into entry docs and `project/symbol-audit-map.json`, but the coordinator must not mark a symbol `agent_audited` from script output, extractor confidence, generated health placeholders, or the mere existence of an entry doc.
 6. If `promote` is missing required agent-promotion metadata such as `--agent-call-signature-json`, it should downgrade the record to `audit.status: script_assessed` and report `missing_agent_call_signature` instead of failing the whole workflow by default.
-7. If no real audit agent or human has performed the review, the symbol must remain `unaudited` or `script_assessed`, even when entry docs contain `Actual Role`, health fields, and no known issues.
+7. An audit agent assignment is incomplete until `scripts/audit_integrity.py promote` records `audit.status: agent_audited` for that exact symbol using that agent's recent call signature batch. If promotion fails or downgrades to `script_assessed`, the symbol remains pending and the agent or coordinator must report the pending state.
+8. If no real audit agent or human has performed the review, the symbol must remain `unaudited` or `script_assessed`, even when entry docs contain `Actual Role`, health fields, and no known issues.
 
 ### Symbol Health Audit Workflow
 
@@ -218,7 +226,7 @@ Use this workflow whenever the task asks for health, risk, correctness, or audit
 
 1. Classify the request before doing audit work:
    - `single symbol audit`: exactly one class, top-level function, method, or signature is in scope. The current agent must personally read that symbol's implementation, relevant callers or callees needed to understand behavior, related tests or explicit missing-test evidence, and linked flow or code symbol docs before recording health.
-   - `multiple symbol audit`: two or more classes, top-level functions, methods, or signatures are in scope. The coordinator must create one audit agent per required symbol by default. Each audit agent must complete code exploration, health judgment, entry-doc update, and controlled promotion for only its assigned symbol.
+   - `multiple symbol audit`: two or more classes, top-level functions, methods, or signatures are in scope. The coordinator must create one audit agent per required symbol by default. Each audit agent must complete code exploration, health judgment, entry-doc update, and controlled promotion to `audit.status: agent_audited` for only its assigned symbol.
 2. For a `single symbol audit`, update the symbol entry doc with evidence-backed `Actual Role`, health dimensions, issues, and key signals, then run `scripts/audit_integrity.py promote` for that symbol only. Run `verify` or `report` afterward and keep the symbol pending unless the latest result is closure-eligible.
 3. For a `multiple symbol audit`, the coordinator may run scripts to discover pending symbols, create queues, verify entry docs, check formatting, or integrate completed records. These scripts may only inventory, queue, validate, or record reviewed results; they must not bulk-generate health, issues, `Actual Role`, audit rationale, or `agent_audited` status for multiple symbols.
 4. Bulk script output, spreadsheet transforms, JSON rewrites, extractor confidence, generated health placeholders, repeated prompts over many symbols, or reused tool-call batches are not symbol health audits. Treat that output as `script_assessed` or planning evidence only.

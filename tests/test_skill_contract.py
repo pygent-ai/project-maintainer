@@ -96,3 +96,28 @@ def test_audit_visual_report_workflow_is_documented() -> None:
     assert "audit_integrity.py report" in combined
     assert "regenerate" in combined
     assert "older data" in combined
+
+
+def test_artifact_local_audit_signing_key_workflow_is_documented() -> None:
+    skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    code_symbol_docs = (SKILL_ROOT / "references" / "code-symbol-docs.md").read_text(encoding="utf-8")
+    combined = "\n".join([skill, code_symbol_docs])
+
+    assert "PROJECT_MAINTAINER_AUDIT_SIGNING_KEY" in combined
+    assert "ensure-key" in combined
+    assert ".doc_project_maintainer/project/audit-signing-key.json" in combined
+    assert "artifact-local agent workflow integrity" in combined
+    assert "not a tamper-proof security boundary" in combined
+    assert "If the environment variable is absent" in combined
+
+
+def test_audit_agent_assignment_requires_agent_audited_promotion() -> None:
+    skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    code_symbol_docs = (SKILL_ROOT / "references" / "code-symbol-docs.md").read_text(encoding="utf-8")
+    combined = "\n".join([skill, code_symbol_docs])
+
+    assert "assignment is incomplete" in combined
+    assert "that agent's recent call signature batch" in combined
+    assert "`audit.status: agent_audited`" in combined
+    assert "downgrades to `script_assessed`" in combined
+    assert "the symbol remains pending" in combined

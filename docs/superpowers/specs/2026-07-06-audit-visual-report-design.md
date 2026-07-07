@@ -215,10 +215,11 @@ Integrity refresh failure:
 - Include a concise command failure summary and the attempted command.
 - Do not count `agent_audited` records as trusted closure without a fresh trusted integrity result.
 
-Missing signing key:
+Missing or unreadable signing key:
 
-- Treat as integrity refresh failure.
-- Explain that agent audit trust could not be verified because the configured signing key environment variable was absent.
+- Do not fail merely because `PROJECT_MAINTAINER_AUDIT_SIGNING_KEY` is absent; preflight may run `audit_integrity.py ensure-key`, and the report refresh should load or create `.doc_project_maintainer/project/audit-signing-key.json`.
+- Treat an unsupported, unreadable, or malformed artifact-local key as integrity refresh failure.
+- Explain that agent audit trust could not be verified because the configured signing key source was unavailable or invalid.
 
 Unknown schema or missing optional fields:
 

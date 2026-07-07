@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import secrets
 import subprocess
 import sys
 from typing import Any
@@ -36,6 +37,8 @@ DEFAULT_KEY_ID = "project-maintainer-local-v1"
 GENERATED_BY = "audit_integrity.py"
 CANONICALIZATION = "sorted-json-excluding-signature-payload-hash-and-observation-fields"
 INTEGRITY_SCHEMA = "project-maintainer.audit-integrity.v1"
+SIGNING_KEY_SCHEMA = "project-maintainer.audit-signing-key.v1"
+ARTIFACT_SIGNING_KEY_PATH = Path(".doc_project_maintainer") / "project" / "audit-signing-key.json"
 
 
 class AuditIntegrityError(Exception):
@@ -110,11 +113,61 @@ def git_status_short(root: Path) -> list[str]:
     return [line for line in output.splitlines() if line.strip()]
 
 
-def signing_secret(env_name: str) -> bytes:
-    secret = os.environ.get(env_name)
-    if not secret:
-        raise AuditIntegrityError(f"Signing key environment variable is not set: {env_name}")
+def artifact_signing_key_path(root: Path) -> Path:
+    return root / ARTIFACT_SIGNING_KEY_PATH
+
+
+def generated_signing_key(env_name: str, key_id: str) -> dict[str, Any]:
+    return {
+        "schema": SIGNING_KEY_SCHEMA,
+        "algorithm": "hmac-sha256",
+        "created_at": utc_now(),
+        "environment_variable": env_name,
+        "generated_by": GENERATED_BY,
+        "key_id": key_id,
+        "purpose": "artifact-local agent workflow integrity",
+        "secret": secrets.token_urlsafe(32),
+    }
+
+
+def artifact_signing_secret(root: Path, env_name: str, key_id: str) -> bytes:
+    path = artifact_signing_key_path(root)
+    if not path.exists():
+        write_json(path, generated_signing_key(env_name, key_id))
+    record = read_json(path)
+    if record.get("schema") != SIGNING_KEY_SCHEMA:
+        raise AuditIntegrityError(f"Artifact signing key has unsupported schema: {path}")
+    if record.get("algorithm") != "hmac-sha256":
+        raise AuditIntegrityError(f"Artifact signing key has unsupported algorithm: {path}")
+    secret = record.get("secret")
+    if not isinstance(secret, str) or not secret:
+        raise AuditIntegrityError(f"Artifact signing key is missing a non-empty secret: {path}")
     return secret.encode("utf-8")
+
+
+def signing_secret(env_name: str, root: Path, key_id: str) -> bytes:
+    secret = os.environ.get(env_name)
+    if secret:
+        return secret.encode("utf-8")
+    return artifact_signing_secret(root, env_name, key_id)
+
+
+def ensure_key(args: argparse.Namespace) -> int:
+    root = args.repo_root.resolve()
+    path = artifact_signing_key_path(root)
+    created = not path.exists()
+    artifact_signing_secret(root, args.signing_key_env, args.key_id)
+    record = read_json(path)
+    output = {
+        "created": created,
+        "environment_variable": record.get("environment_variable"),
+        "key_id": record.get("key_id"),
+        "key_path": str(path),
+        "purpose": record.get("purpose"),
+        "schema": record.get("schema"),
+    }
+    print(canonical_json(output))
+    return 0
 
 
 def hmac_signature(secret: bytes, payload_hash: str) -> str:
@@ -291,7 +344,7 @@ def promote(args: argparse.Namespace) -> int:
     if not source_file.exists():
         raise AuditIntegrityError(f"Source file not found: {source_file}")
 
-    secret = signing_secret(args.signing_key_env)
+    secret = signing_secret(args.signing_key_env, root, args.key_id)
     audit_map_hash_before = file_hash(audit_map_path)
     audit_map = read_json(audit_map_path)
     record = find_symbol(audit_map, args.symbol_id)
@@ -454,7 +507,7 @@ def increment(mapping: dict[str, int], key: str) -> None:
 def verify_or_report(args: argparse.Namespace, *, verify_mode: bool) -> int:
     root = args.repo_root.resolve()
     audit_map = read_json(resolve_repo_path(root, args.audit_map))
-    secret = signing_secret(args.signing_key_env)
+    secret = signing_secret(args.signing_key_env, root, args.key_id)
     all_records = [item for item in audit_map.get("symbols", []) if isinstance(item, dict)]
     scoped_records = [item for item in all_records if (args.scope == "all" or item.get("audit_scope") == args.scope)]
     counts = batch_hash_counts(scoped_records)
@@ -579,17 +632,24 @@ def recommended_action(result_counts: dict[str, int], pending: int) -> str:
     return "No action required for the requested scope."
 
 
-def add_common_arguments(parser: argparse.ArgumentParser) -> None:
+def add_repo_key_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--repo-root", type=Path, required=True)
-    parser.add_argument("--audit-map", type=Path, required=True)
     parser.add_argument("--signing-key-env", default=DEFAULT_SIGNING_KEY_ENV)
     parser.add_argument("--key-id", default=DEFAULT_KEY_ID)
     parser.add_argument("--strict", action="store_true")
 
 
+def add_common_arguments(parser: argparse.ArgumentParser) -> None:
+    add_repo_key_arguments(parser)
+    parser.add_argument("--audit-map", type=Path, required=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    ensure_key_parser = subparsers.add_parser("ensure-key", help="Ensure the artifact-local audit signing key exists")
+    add_repo_key_arguments(ensure_key_parser)
 
     promote_parser = subparsers.add_parser("promote", help="Promote a symbol audit record through the controlled entrypoint")
     add_common_arguments(promote_parser)
@@ -619,6 +679,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "ensure-key":
+            return ensure_key(args)
         if args.command == "promote":
             return promote(args)
         if args.command == "verify":

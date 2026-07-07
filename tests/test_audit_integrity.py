@@ -85,6 +85,23 @@ def run_audit_integrity(project: Path, *args: str, key: str = "test-secret") -> 
     )
 
 
+def run_audit_integrity_without_env(project: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.pop("PROJECT_MAINTAINER_AUDIT_SIGNING_KEY", None)
+    return subprocess.run(
+        [sys.executable, str(AUDIT_INTEGRITY_SCRIPT), *args],
+        cwd=project,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def artifact_signing_key_path(project: Path) -> Path:
+    return project / ".doc_project_maintainer" / "project" / "audit-signing-key.json"
+
+
 def signature_file(project: Path) -> Path:
     path = project / "signature-batch.json"
     write(
@@ -124,6 +141,136 @@ def bom_signature_file(project: Path) -> Path:
 
 
 class AuditIntegrityEntrypointTests(unittest.TestCase):
+    def test_ensure_key_creates_artifact_local_key_without_audit_map(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            key_path = artifact_signing_key_path(project)
+
+            result = run_audit_integrity_without_env(
+                project,
+                "ensure-key",
+                "--repo-root",
+                str(project),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(key_path.exists())
+            output = json.loads(result.stdout)
+            self.assertTrue(output["created"])
+            self.assertEqual(output["key_path"], str(key_path))
+            self.assertNotIn("secret", output)
+
+            second_result = run_audit_integrity_without_env(
+                project,
+                "ensure-key",
+                "--repo-root",
+                str(project),
+            )
+
+            self.assertEqual(second_result.returncode, 0, second_result.stderr)
+            second_output = json.loads(second_result.stdout)
+            self.assertFalse(second_output["created"])
+
+    def test_promote_without_env_creates_artifact_local_signing_key(self) -> None:
+        temp_dir, project, audit_map = init_project_with_docs(["handle_request"])
+        self.addCleanup(temp_dir.cleanup)
+        key_path = artifact_signing_key_path(project)
+        self.assertFalse(key_path.exists())
+
+        result = run_audit_integrity_without_env(
+            project,
+            "promote",
+            "--repo-root",
+            str(project),
+            "--audit-map",
+            str(audit_map),
+            "--entry-doc",
+            str(project / ".doc_project_maintainer" / "code" / "app" / "server.py" / "handle_request.md"),
+            "--symbol-id",
+            "app/server.py::function::handle_request",
+            "--source-file",
+            "app/server.py",
+            "--scope",
+            "default_health_audit",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(key_path.exists())
+        key_record = json.loads(key_path.read_text(encoding="utf-8"))
+        self.assertEqual(key_record["schema"], "project-maintainer.audit-signing-key.v1")
+        self.assertEqual(key_record["environment_variable"], "PROJECT_MAINTAINER_AUDIT_SIGNING_KEY")
+        self.assertEqual(key_record["purpose"], "artifact-local agent workflow integrity")
+        self.assertIsInstance(key_record["secret"], str)
+        self.assertGreaterEqual(len(key_record["secret"]), 32)
+
+        verify = run_audit_integrity_without_env(
+            project,
+            "verify",
+            "--repo-root",
+            str(project),
+            "--audit-map",
+            str(audit_map),
+            "--scope",
+            "default_health_audit",
+        )
+
+        self.assertEqual(verify.returncode, 0, verify.stdout)
+
+    def test_existing_artifact_local_signing_key_is_reused_when_env_is_missing(self) -> None:
+        temp_dir, project, audit_map = init_project_with_docs(["handle_request"])
+        self.addCleanup(temp_dir.cleanup)
+        key_path = artifact_signing_key_path(project)
+        write(
+            key_path,
+            """
+            {
+              "schema": "project-maintainer.audit-signing-key.v1",
+              "algorithm": "hmac-sha256",
+              "environment_variable": "PROJECT_MAINTAINER_AUDIT_SIGNING_KEY",
+              "key_id": "project-maintainer-local-v1",
+              "purpose": "artifact-local agent workflow integrity",
+              "secret": "persisted-test-secret",
+              "generated_by": "test"
+            }
+            """,
+        )
+        signature = signature_file(project)
+
+        promote = run_audit_integrity_without_env(
+            project,
+            "promote",
+            "--repo-root",
+            str(project),
+            "--audit-map",
+            str(audit_map),
+            "--entry-doc",
+            str(project / ".doc_project_maintainer" / "code" / "app" / "server.py" / "handle_request.md"),
+            "--symbol-id",
+            "app/server.py::function::handle_request",
+            "--source-file",
+            "app/server.py",
+            "--scope",
+            "default_health_audit",
+            "--agent-call-signature-json",
+            str(signature),
+        )
+        self.assertEqual(promote.returncode, 0, promote.stderr)
+
+        verify_with_env_key = run_audit_integrity(
+            project,
+            "verify",
+            "--repo-root",
+            str(project),
+            "--audit-map",
+            str(audit_map),
+            "--scope",
+            "default_health_audit",
+            "--require-closure",
+            key="persisted-test-secret",
+        )
+
+        self.assertEqual(verify_with_env_key.returncode, 0, verify_with_env_key.stdout)
+
     def test_promote_without_agent_signature_downgrades_to_script_assessed(self) -> None:
         temp_dir, project, audit_map = init_project_with_docs(["handle_request"])
         self.addCleanup(temp_dir.cleanup)

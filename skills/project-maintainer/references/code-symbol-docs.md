@@ -178,6 +178,8 @@ audit:
 
 Use `scripts/audit_integrity.py` for audit status transitions and integrity signing. The `promote` command records HMAC-SHA256 integrity metadata, source and entry-doc hashes, the script hash, git state, and an optional agent call signature batch. If the signature batch is missing, `promote` records `audit.status: script_assessed` plus `missing_agent_call_signature` instead of writing `agent_audited`.
 
+Use `PROJECT_MAINTAINER_AUDIT_SIGNING_KEY` as the HMAC key environment variable when it is already provided. During Project Maintainer preflight, run `scripts/audit_integrity.py ensure-key --repo-root <repo-root>` to create or validate `.doc_project_maintainer/project/audit-signing-key.json`. If the environment variable is absent, `scripts/audit_integrity.py` loads that artifact-local key file during promote, verify, report, and audit visualization refreshes. Treat the file's purpose as artifact-local agent workflow integrity, not a tamper-proof security boundary; it constrains controlled agent workflows but does not stop a user or process with artifact write access from re-signing records.
+
 ```text
 closure_eligible =
   audit.status == "human_audited"
@@ -196,6 +198,7 @@ Use this workflow for any class, top-level function, method, or signature health
 
 - For a `single symbol audit`, the current agent must read the implementation, the relevant callers or callees needed to understand behavior, direct or missing test evidence, and any linked flow or code symbol docs before writing `Actual Role`, health, issues, or audit rationale. After the evidence-backed entry doc update, use `scripts/audit_integrity.py promote` to record that one symbol and run `verify` or `report`.
 - For a `multiple symbol audit`, the coordinator must assign one audit agent per required symbol by default. Each audit agent owns code exploration, health judgment, entry-doc update, and controlled promotion for exactly its assigned symbol.
+- An audit agent assignment is incomplete until `scripts/audit_integrity.py promote` records `audit.status: agent_audited` for that exact symbol using that agent's recent call signature batch. If promotion fails or downgrades to `script_assessed`, the symbol remains pending and the agent or coordinator must report the pending state.
 - Coordination scripts may only inventory, queue, validate, or record reviewed results. They must not bulk-generate health, `Actual Role`, issues, rationale, or `agent_audited` status for many symbols.
 - If independent audit agents are unavailable, keep the remaining symbols in `Pending Symbol Audit Slices` and keep requested-scope health audit status `partial`. Do not convert script output, generated placeholders, repeated prompt output, or reused tool-call batches into closure-eligible symbol audits.
 
