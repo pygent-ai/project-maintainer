@@ -121,3 +121,16 @@ def test_audit_agent_assignment_requires_agent_audited_promotion() -> None:
     assert "`audit.status: agent_audited`" in combined
     assert "downgrades to `script_assessed`" in combined
     assert "the symbol remains pending" in combined
+
+
+def test_symbol_hash_expiration_preserves_unchanged_sibling_methods() -> None:
+    skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    code_symbol_docs = (SKILL_ROOT / "references" / "code-symbol-docs.md").read_text(encoding="utf-8")
+    templates = (SKILL_ROOT / "references" / "templates.md").read_text(encoding="utf-8")
+    combined = "\n".join([skill, code_symbol_docs, templates])
+
+    assert "audited_symbol_hash" in combined
+    assert "normalized AST" in combined
+    assert "unchanged sibling methods" in combined
+    assert "Legacy records" in combined
+    assert "file hash" in combined

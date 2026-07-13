@@ -141,6 +141,104 @@ def bom_signature_file(project: Path) -> Path:
 
 
 class AuditIntegrityEntrypointTests(unittest.TestCase):
+    def test_verify_keeps_audit_trusted_when_only_sibling_function_changes(self) -> None:
+        temp_dir, project, audit_map = init_project_with_docs(["handle_request", "normalize_request"])
+        self.addCleanup(temp_dir.cleanup)
+        signature = signature_file(project)
+
+        promote = run_audit_integrity(
+            project,
+            "promote",
+            "--repo-root",
+            str(project),
+            "--audit-map",
+            str(audit_map),
+            "--entry-doc",
+            ".doc_project_maintainer/code/app/server.py/handle_request.md",
+            "--symbol-id",
+            "app/server.py::function::handle_request",
+            "--source-file",
+            "app/server.py",
+            "--agent-call-signature-json",
+            str(signature),
+        )
+        self.assertEqual(promote.returncode, 0, promote.stderr)
+
+        write(
+            project / "app" / "server.py",
+            """
+            def handle_request(value):
+                return value.strip()
+
+            def normalize_request(value):
+                return value.casefold()
+            """,
+        )
+        verify = run_audit_integrity(
+            project,
+            "verify",
+            "--repo-root",
+            str(project),
+            "--audit-map",
+            str(audit_map),
+        )
+
+        self.assertEqual(verify.returncode, 0, verify.stdout)
+        report = json.loads(verify.stdout)
+        audited = next(item for item in report["records_detail"] if item["id"].endswith("handle_request"))
+        self.assertEqual(audited["trust_result"], "trusted_agent_audit")
+        self.assertNotIn("source_hash_changed", audited["result_codes"])
+        self.assertNotIn("symbol_hash_changed", audited["result_codes"])
+
+    def test_verify_reports_symbol_hash_change_for_changed_audited_function(self) -> None:
+        temp_dir, project, audit_map = init_project_with_docs(["handle_request", "normalize_request"])
+        self.addCleanup(temp_dir.cleanup)
+        signature = signature_file(project)
+
+        promote = run_audit_integrity(
+            project,
+            "promote",
+            "--repo-root",
+            str(project),
+            "--audit-map",
+            str(audit_map),
+            "--entry-doc",
+            ".doc_project_maintainer/code/app/server.py/handle_request.md",
+            "--symbol-id",
+            "app/server.py::function::handle_request",
+            "--source-file",
+            "app/server.py",
+            "--agent-call-signature-json",
+            str(signature),
+        )
+        self.assertEqual(promote.returncode, 0, promote.stderr)
+
+        write(
+            project / "app" / "server.py",
+            """
+            def handle_request(value):
+                return value.strip().casefold()
+
+            def normalize_request(value):
+                return value.strip()
+            """,
+        )
+        verify = run_audit_integrity(
+            project,
+            "verify",
+            "--repo-root",
+            str(project),
+            "--audit-map",
+            str(audit_map),
+        )
+
+        self.assertEqual(verify.returncode, 2, verify.stdout)
+        report = json.loads(verify.stdout)
+        audited = next(item for item in report["records_detail"] if item["id"].endswith("handle_request"))
+        self.assertEqual(audited["trust_result"], "invalid_agent_audit")
+        self.assertIn("symbol_hash_changed", audited["result_codes"])
+        self.assertNotIn("source_hash_changed", audited["result_codes"])
+
     def test_ensure_key_creates_artifact_local_key_without_audit_map(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project = Path(temp_dir)

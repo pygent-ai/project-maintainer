@@ -28,7 +28,7 @@ skills/
 
 ## Version
 
-Current version: `0.0.10`
+Current version: `0.0.11`
 
 ## What The Skill Does
 
@@ -46,7 +46,7 @@ Current version: `0.0.10`
 - Summarizes git history by module, directory, flow, and code symbol when applicable.
 - Records meaningful project and code changes, including features, fixes, refactors, behavior or structure changes, test strategy changes, and design decisions, while excluding routine artifact synchronization from change records.
 - Tracks partial coverage with `project/coverage-map.json` and `project/build-plan.md` for large projects.
-- Tracks class, top-level function, and class method audit state with `project/symbol-audit-map.json`, including agent/human audit state, audit expiration, health snapshots, issue records, and default health audit summaries.
+- Tracks class, top-level function, and class method audit state with `project/symbol-audit-map.json`, including symbol-level expiration that avoids invalidating unchanged sibling methods, agent/human audit state, health snapshots, issue records, and default health audit summaries.
 - Recommends repository coverage slices and default runtime/library audit slices for first scans or stale coverage when the repository exceeds file, symbol, or module-size thresholds.
 - Requires a coverage closure audit before marking project-wide coverage or sync status as current.
 - Requires full repository analysis goals to continue through actionable pending slices instead of ending after a partial map.

@@ -40,7 +40,7 @@ Closure is a separate derived predicate. Every report, CI check, final-response 
 - `script_assessed`: the controlled script processed the symbol or audit record, but no agent or human audit has been accepted.
 - `agent_audited`: an agent audit claim was accepted through the controlled entrypoint with an agent call signature. This is provisional until full verification classifies it as trusted.
 - `human_audited`: a human audit was accepted or confirmed.
-- `audit_expired`: the audited source hash no longer matches current source.
+- `audit_expired`: the audited symbol hash no longer matches the current symbol. Legacy and low-confidence extractors may conservatively fall back to the containing file hash.
 - `out_of_scope`: the symbol is intentionally excluded with a reason.
 
 Only `human_audited`, `out_of_scope`, and verified-trusted `agent_audited` records satisfy health-audit closure. Plain `agent_audited` means "accepted for review tracking," not "trusted for closure." `unaudited`, `script_assessed`, `audit_expired`, and unverified or suspicious `agent_audited` records are pending for closure.
@@ -230,7 +230,8 @@ Each audit record should receive one or more result codes:
 - `missing_agent_call_signature`: record requests or claims agent audit without a call signature batch.
 - `unsigned_agent_audit`: record claims `agent_audited` but has no integrity signature.
 - `integrity_mismatch`: payload or signature verification failed.
-- `source_hash_changed`: source file no longer matches the signed source hash.
+- `symbol_hash_changed`: the audited symbol no longer matches the signed symbol hash.
+- `source_hash_changed`: a legacy or file-fallback audit no longer matches the signed source file hash.
 - `entry_doc_hash_changed`: symbol entry doc no longer matches the signed entry doc hash.
 - `untrusted_script_hash`: signature was produced by a script hash that is not trusted.
 - `invalid_audit_status`: status is missing or not in the allowed state machine.
@@ -311,7 +312,7 @@ When `verify` finds invalid closure-candidate audit records, the coordinator sho
 
 - Keep invalid records visible in the report.
 - Keep `agent_audited` records visible as audit claims, but treat provisional, suspicious, or invalid agent audits as pending for closure.
-- Mark records with source hash changes as `audit_expired` only through the controlled script.
+- Mark records with symbol hash changes as `audit_expired` only through the controlled script; preserve unchanged sibling-method audits.
 - Ask an agent or human to rerun `promote` for records that need fresh review.
 - When a verification report finds unsigned, suspicious, or invalid records, the coordinator should present the report to the agent or human and ask whether to downgrade, mark suspicious, expire, or rerun review. The chosen disposition must be written through the controlled entrypoint.
 - Record suspicious batch reuse in `project/build-plan.md` or the report output so it is not hidden by later inventory runs.
